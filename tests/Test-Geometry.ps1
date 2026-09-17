@@ -102,6 +102,33 @@ $rt = ConvertTo-ImagePoint -Point (ConvertTo-ScreenRect -Rect (Rc 1234 987 10 10
                            -OffX 100 -OffY 0 -Scale $scale4k -MaxW 3840 -MaxH 2160
 Chk "$($rt.X),$($rt.Y)" '1234,987' '4K round trip with no drift'
 
+# --- Get-ViewPort (zoom + pan) ---
+# 1920x1080 image on a 1920x1080 screen: fit is 1:1 and nothing to pan.
+$vp = Get-ViewPort -Zoom 1.0 -ImgW 1920 -ImgH 1080 -ViewW 1920 -ViewH 1080 -CenterX 960 -CenterY 540
+Chk "$($vp.OffX),$($vp.OffY)" '0,0' 'view: exact fit sits at the origin'
+
+# Smaller than the window: centred, and the centre is ignored.
+$vp = Get-ViewPort -Zoom 1.0 -ImgW 800 -ImgH 600 -ViewW 1920 -ViewH 1080 -CenterX 0 -CenterY 0
+Chk "$($vp.OffX),$($vp.OffY)" '560,240' 'view: smaller image is centred'
+Chk "$($vp.CenterX),$($vp.CenterY)" '400,300' 'view: centre reported as the image middle'
+
+# Zoomed to 2x: 3840x2160 drawn, the requested centre lands in the middle.
+$vp = Get-ViewPort -Zoom 2.0 -ImgW 1920 -ImgH 1080 -ViewW 1920 -ViewH 1080 -CenterX 960 -CenterY 540
+Chk "$($vp.OffX),$($vp.OffY)" '-960,-540' 'view: 2x centred on the image middle'
+Chk "$($vp.DrawW),$($vp.DrawH)" '3840,2160' 'view: drawn size follows the zoom'
+
+# Panning past the edge is clamped: no empty margin ever shows.
+$vp = Get-ViewPort -Zoom 2.0 -ImgW 1920 -ImgH 1080 -ViewW 1920 -ViewH 1080 -CenterX 0 -CenterY 0
+Chk "$($vp.OffX),$($vp.OffY)" '0,0' 'view: pan clamped at the top-left'
+Chk "$($vp.CenterX),$($vp.CenterY)" '480,270' 'view: clamped centre is reported back'
+$vp = Get-ViewPort -Zoom 2.0 -ImgW 1920 -ImgH 1080 -ViewW 1920 -ViewH 1080 -CenterX 99999 -CenterY 99999
+Chk "$($vp.OffX),$($vp.OffY)" '-1920,-1080' 'view: pan clamped at the bottom-right'
+
+# A 4K shot on a 1080p screen zoomed to 1:1: one screen px is one image px.
+$vp = Get-ViewPort -Zoom 1.0 -ImgW 3840 -ImgH 2160 -ViewW 1920 -ViewH 1080 -CenterX 1000 -CenterY 800
+$p  = ConvertTo-ImagePoint -Point (Pt 960 540) -OffX $vp.OffX -OffY $vp.OffY -Scale 1.0 -MaxW 3840 -MaxH 2160
+Chk "$($p.X),$($p.Y)" '1000,800' 'view: the centre of the window is the panned point'
+
 # --- Full sequence: draw, move, keys ---
 $sel = New-NormalizedRect -L 40 -T 60 -R 240 -B 210 -MaxW 800 -MaxH 600   # 200x150 @40,60
 Chk (Fmt $sel) '40,60,200,150' 'seq: drag'

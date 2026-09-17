@@ -376,6 +376,48 @@ function Get-NudgedRect {
     return (Get-MovedRect -Rect $Rect -X ($Rect.X + $Dx) -Y ($Rect.Y + $Dy) -MaxW $MaxW -MaxH $MaxH)
 }
 
+# Where the image lands on screen for a given zoom. Smaller than the window it
+# is centred; bigger, it is pinned so the requested centre stays visible and no
+# empty margin ever shows. The centre is returned back already clamped, so the
+# caller can keep panning from where it really ended up.
+function Get-ViewPort {
+    param(
+        [double]$Zoom, [int]$ImgW, [int]$ImgH,
+        [int]$ViewW, [int]$ViewH,
+        [double]$CenterX, [double]$CenterY
+    )
+    $drawW = [Math]::Max(1, [int][Math]::Round($ImgW * $Zoom))
+    $drawH = [Math]::Max(1, [int][Math]::Round($ImgH * $Zoom))
+
+    if ($drawW -le $ViewW) {
+        $offX = [int](($ViewW - $drawW) / 2)
+        $cx   = $ImgW / 2.0
+    }
+    else {
+        $offX = [int][Math]::Round($ViewW / 2.0 - $CenterX * $Zoom)
+        if ($offX -gt 0)               { $offX = 0 }
+        if ($offX -lt $ViewW - $drawW) { $offX = $ViewW - $drawW }
+        $cx = ($ViewW / 2.0 - $offX) / $Zoom
+    }
+
+    if ($drawH -le $ViewH) {
+        $offY = [int](($ViewH - $drawH) / 2)
+        $cy   = $ImgH / 2.0
+    }
+    else {
+        $offY = [int][Math]::Round($ViewH / 2.0 - $CenterY * $Zoom)
+        if ($offY -gt 0)               { $offY = 0 }
+        if ($offY -lt $ViewH - $drawH) { $offY = $ViewH - $drawH }
+        $cy = ($ViewH / 2.0 - $offY) / $Zoom
+    }
+
+    [pscustomobject]@{
+        OffX = $offX; OffY = $offY
+        DrawW = $drawW; DrawH = $drawH
+        CenterX = $cx; CenterY = $cy
+    }
+}
+
 function ConvertTo-ScreenRect {
     param([System.Drawing.Rectangle]$Rect, [int]$OffX, [int]$OffY, [double]$Scale)
     New-Object System.Drawing.Rectangle(
@@ -475,17 +517,18 @@ function Select-Region {
     $imgW   = $Image.Width
     $imgH   = $Image.Height
 
-    # The image is drawn scaled to fit the screen, never enlarged.
-    $scale = [Math]::Min($screen.Width / $imgW, $screen.Height / $imgH)
-    if ($scale -gt 1) { $scale = 1.0 }
+    # The image starts scaled to fit the screen, never enlarged. That fit is
+    # also the zoom floor: zooming out past it would only add empty margin.
+    $fitScale = [Math]::Min($screen.Width / $imgW, $screen.Height / $imgH)
+    if ($fitScale -gt 1) { $fitScale = 1.0 }
+    $MAXZOOM = 16.0
     # With extreme aspect ratios the rounding can reach 0 and Bitmap throws.
-    $drawW = [Math]::Max(1, [int]($imgW * $scale))
-    $drawH = [Math]::Max(1, [int]($imgH * $scale))
-    $offX  = [int](($screen.Width  - $drawW) / 2)
-    $offY  = [int](($screen.Height - $drawH) / 2)
+    $drawW = [Math]::Max(1, [int]($imgW * $fitScale))
+    $drawH = [Math]::Max(1, [int]($imgH * $fitScale))
 
     # Rescaled ONCE: redoing the interpolation on every Paint makes dragging
-    # stutter with large screenshots.
+    # stutter with large screenshots. Only the fit view is cached; zoomed in,
+    # Paint redraws just the visible slice of the original, which is small.
     $canvas = New-Object System.Drawing.Bitmap($drawW, $drawH, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
     $cg = [System.Drawing.Graphics]::FromImage($canvas)
     $cg.InterpolationMode = 'HighQualityBicubic'
@@ -494,19 +537,64 @@ function Select-Region {
                   [System.Drawing.GraphicsUnit]::Pixel)
     $cg.Dispose()
 
-    $GRAB = 9   # grab radius of the handles, in screen px
+    $GRAB   = 9     # grab radius of the handles, in screen px
+    # 144 = 18 image px at 8x, an exact fit: any other pairing would leave a
+    # dead band down two sides of the box.
+    $LSIZE  = 144   # side of the magnifier, in screen px
+    $LZOOM  = 8     # screen px per image px inside the magnifier
 
     $state = [pscustomobject]@{
-        Mode    = 'idle'      # idle | drawing | moving | resizing
+        Mode    = 'idle'      # idle | drawing | moving | resizing | panning
         Sel     = New-Object System.Drawing.Rectangle(0, 0, 0, 0)   # image px
         Anchor  = New-Object System.Drawing.Point(0, 0)             # image px
         Handle  = ''
         MoveOff = New-Object System.Drawing.Point(0, 0)
         Result  = $null
+        # View: Zoom is screen px per image px, Off* where image (0,0) lands
+        # (negative once zoomed past the window), Center* the image point held
+        # at the middle of the window while panning.
+        Zoom    = $fitScale
+        OffX    = [int](($screen.Width  - $drawW) / 2)
+        OffY    = [int](($screen.Height - $drawH) / 2)
+        CenterX = $imgW / 2.0
+        CenterY = $imgH / 2.0
+        PanFrom = New-Object System.Drawing.Point(0, 0)   # screen px
+        PanCX   = 0.0
+        PanCY   = 0.0
+        Loupe   = $true
+        Cursor  = New-Object System.Drawing.Point(-1, -1)
+        HasCur  = $false
     }
 
-    $toImg = { param($p) ConvertTo-ImagePoint -Point $p -OffX $offX -OffY $offY -Scale $scale -MaxW $imgW -MaxH $imgH }
-    $toScr = { param($r) ConvertTo-ScreenRect -Rect $r -OffX $offX -OffY $offY -Scale $scale }
+    $toImg = { param($p) ConvertTo-ImagePoint -Point $p -OffX $state.OffX -OffY $state.OffY -Scale $state.Zoom -MaxW $imgW -MaxH $imgH }
+    $toScr = { param($r) ConvertTo-ScreenRect -Rect $r -OffX $state.OffX -OffY $state.OffY -Scale $state.Zoom }
+
+    # Applies a zoom + centre pair to the view, clamped by Get-ViewPort.
+    $setView = {
+        param([double]$zoom, [double]$cx, [double]$cy)
+        if ($zoom -lt $fitScale) { $zoom = $fitScale }
+        if ($zoom -gt $MAXZOOM)  { $zoom = $MAXZOOM }
+        $vp = Get-ViewPort -Zoom $zoom -ImgW $imgW -ImgH $imgH `
+                           -ViewW $screen.Width -ViewH $screen.Height -CenterX $cx -CenterY $cy
+        $state.Zoom    = $zoom
+        $state.OffX    = $vp.OffX
+        $state.OffY    = $vp.OffY
+        $state.CenterX = $vp.CenterX
+        $state.CenterY = $vp.CenterY
+    }
+
+    # Zooms keeping the image point under the given screen point pinned there,
+    # which is what makes wheel zoom feel like it homes in on the detail.
+    $zoomAt = {
+        param([double]$zoom, [System.Drawing.Point]$anchor)
+        if ($zoom -lt $fitScale) { $zoom = $fitScale }
+        if ($zoom -gt $MAXZOOM)  { $zoom = $MAXZOOM }
+        $ix = ($anchor.X - $state.OffX) / $state.Zoom
+        $iy = ($anchor.Y - $state.OffY) / $state.Zoom
+        $cx = $ix + ($screen.Width  / 2.0 - $anchor.X) / $zoom
+        $cy = $iy + ($screen.Height / 2.0 - $anchor.Y) / $zoom
+        & $setView $zoom $cx $cy
+    }
 
     $form = New-Object BufferedForm
     $form.FormBorderStyle = 'None'
@@ -531,7 +619,32 @@ function Select-Region {
     $form.Add_Paint({
         param($s, $e)
         $g = $e.Graphics
-        $g.DrawImageUnscaled($canvas, $offX, $offY)
+
+        if ($state.Zoom -le $fitScale + 1e-9) {
+            $g.DrawImageUnscaled($canvas, $state.OffX, $state.OffY)
+        }
+        else {
+            # Only the visible slice is resampled; one extra pixel of margin so
+            # no seam shows at the edges after rounding.
+            $sx = [Math]::Max(0, [int][Math]::Floor((0 - $state.OffX) / $state.Zoom) - 1)
+            $sy = [Math]::Max(0, [int][Math]::Floor((0 - $state.OffY) / $state.Zoom) - 1)
+            $sw = [Math]::Min($imgW - $sx, [int][Math]::Ceiling($screen.Width  / $state.Zoom) + 3)
+            $sh = [Math]::Min($imgH - $sy, [int][Math]::Ceiling($screen.Height / $state.Zoom) + 3)
+            if ($sw -gt 0 -and $sh -gt 0) {
+                $dest = New-Object System.Drawing.Rectangle(
+                    ($state.OffX + [int][Math]::Round($sx * $state.Zoom)),
+                    ($state.OffY + [int][Math]::Round($sy * $state.Zoom)),
+                    [int][Math]::Round($sw * $state.Zoom),
+                    [int][Math]::Round($sh * $state.Zoom))
+                $src = New-Object System.Drawing.Rectangle($sx, $sy, $sw, $sh)
+                # Zoomed in the point is to see the actual pixels, so no blur.
+                $g.InterpolationMode = 'NearestNeighbor'
+                $g.PixelOffsetMode   = 'Half'
+                $g.DrawImage($Image, $dest, $src, [System.Drawing.GraphicsUnit]::Pixel)
+                $g.InterpolationMode = 'Default'
+                $g.PixelOffsetMode   = 'Default'
+            }
+        }
 
         $sel  = & $toScr $state.Sel
         $veil = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(140, 0, 0, 0))
@@ -573,18 +686,112 @@ function Select-Region {
         } else {
             'Drag to select the region  -  Esc cancels'
         }
-        $hf = New-Object System.Drawing.Font ('Segoe UI', 11)
-        $hs = $g.MeasureString($hint, $hf)
-        $hx = ($form.ClientSize.Width - $hs.Width) / 2
-        $g.FillRectangle($bg, ($hx - 14), 22, ($hs.Width + 28), ($hs.Height + 12))
-        $g.DrawString($hint, $hf, [System.Drawing.Brushes]::White, $hx, 28)
-        $hf.Dispose()
+        $zoomPct = [int][Math]::Round($state.Zoom * 100)
+        $hint2 = "Wheel zooms ($zoomPct%)  -  right-drag or middle-drag pans  -  0 fits, 1 is 100%  -  M toggles the magnifier"
+
+        $hf  = New-Object System.Drawing.Font ('Segoe UI', 11)
+        $hf2 = New-Object System.Drawing.Font ('Segoe UI', 9)
+        $hs  = $g.MeasureString($hint,  $hf)
+        $hs2 = $g.MeasureString($hint2, $hf2)
+        $hw  = [Math]::Max($hs.Width, $hs2.Width)
+        $hx  = ($form.ClientSize.Width - $hw) / 2
+        $g.FillRectangle($bg, ($hx - 14), 22, ($hw + 28), ($hs.Height + $hs2.Height + 14))
+        $g.DrawString($hint,  $hf,  [System.Drawing.Brushes]::White,
+                      ($hx + ($hw - $hs.Width) / 2), 28)
+        $g.DrawString($hint2, $hf2, ([System.Drawing.Brushes]::LightSkyBlue),
+                      ($hx + ($hw - $hs2.Width) / 2), (28 + $hs.Height))
+        $hf.Dispose(); $hf2.Dispose()
+
+        # --- magnifier ------------------------------------------------------
+        # Shows the pixels around the cursor at 1:LZOOM with the edges of the
+        # selection drawn in, which is what lets an edge be placed on the exact
+        # pixel even when the whole image is displayed scaled down.
+        if ($state.Loupe -and $state.HasCur -and $state.Mode -ne 'panning') {
+            $ip   = & $toImg $state.Cursor
+            $span = [int]($LSIZE / $LZOOM)              # image px covered
+            $half = [int]($span / 2)
+            $lx = $state.Cursor.X + 26
+            $ly = $state.Cursor.Y + 26
+            if ($lx + $LSIZE + 8 -gt $form.ClientSize.Width)  { $lx = $state.Cursor.X - 26 - $LSIZE }
+            if ($ly + $LSIZE + 30 -gt $form.ClientSize.Height) { $ly = $state.Cursor.Y - 26 - $LSIZE - 22 }
+            if ($lx -lt 8) { $lx = 8 }
+            if ($ly -lt 8) { $ly = 8 }
+
+            $box = New-Object System.Drawing.Rectangle($lx, $ly, $LSIZE, $LSIZE)
+            $g.FillRectangle($bg, $box)
+
+            # Clamped to the image: past its edges the box just stays dark
+            # instead of GDI stretching the border pixels over it.
+            $sx0 = [Math]::Max(0, $ip.X - $half)
+            $sy0 = [Math]::Max(0, $ip.Y - $half)
+            $sx1 = [Math]::Min($imgW, $ip.X - $half + $span)
+            $sy1 = [Math]::Min($imgH, $ip.Y - $half + $span)
+            if ($sx1 -gt $sx0 -and $sy1 -gt $sy0) {
+                $ldest = New-Object System.Drawing.Rectangle(
+                    ($lx + ($sx0 - ($ip.X - $half)) * $LZOOM),
+                    ($ly + ($sy0 - ($ip.Y - $half)) * $LZOOM),
+                    (($sx1 - $sx0) * $LZOOM), (($sy1 - $sy0) * $LZOOM))
+                $lsrc = New-Object System.Drawing.Rectangle($sx0, $sy0, ($sx1 - $sx0), ($sy1 - $sy0))
+                $gsave = $g.Save()
+                $g.SetClip($box)
+                $g.InterpolationMode = 'NearestNeighbor'
+                $g.PixelOffsetMode   = 'Half'
+                $g.DrawImage($Image, $ldest, $lsrc, [System.Drawing.GraphicsUnit]::Pixel)
+                $g.InterpolationMode = 'Default'
+                $g.PixelOffsetMode   = 'Default'
+
+                # The selection, mapped into the magnifier.
+                if ($state.Sel.Width -gt 0 -and $state.Sel.Height -gt 0) {
+                    $sp = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 0, 160, 255)), 2
+                    $g.DrawRectangle($sp,
+                        ($lx + ($state.Sel.X - ($ip.X - $half)) * $LZOOM),
+                        ($ly + ($state.Sel.Y - ($ip.Y - $half)) * $LZOOM),
+                        ($state.Sel.Width * $LZOOM), ($state.Sel.Height * $LZOOM))
+                    $sp.Dispose()
+                }
+
+                # Crosshair on the pixel under the cursor, which sits at the
+                # centre of the magnifier by construction.
+                $cxp = $lx + $half * $LZOOM
+                $cyp = $ly + $half * $LZOOM
+                $cp  = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(180, 255, 80, 80)), 1
+                $g.DrawLine($cp, $lx, ($cyp + $LZOOM / 2), ($lx + $LSIZE), ($cyp + $LZOOM / 2))
+                $g.DrawLine($cp, ($cxp + $LZOOM / 2), $ly, ($cxp + $LZOOM / 2), ($ly + $LSIZE))
+                $g.DrawRectangle($cp, $cxp, $cyp, $LZOOM, $LZOOM)
+                $cp.Dispose()
+                $g.Restore($gsave)
+            }
+
+            $lp = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 230, 230, 230)), 1
+            $g.DrawRectangle($lp, $box)
+            $lp.Dispose()
+
+            $lf  = New-Object System.Drawing.Font ('Segoe UI', 8)
+            $txt = "X=$($ip.X)  Y=$($ip.Y)"
+            $g.FillRectangle($bg, $lx, ($ly + $LSIZE + 2), $LSIZE, 18)
+            $g.DrawString($txt, $lf, [System.Drawing.Brushes]::White, ($lx + 4), ($ly + $LSIZE + 3))
+            $lf.Dispose()
+        }
 
         $veil.Dispose(); $bg.Dispose()
     })
 
     $form.Add_MouseDown({
         param($s, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right -or
+            $e.Button -eq [System.Windows.Forms.MouseButtons]::Middle) {
+            # Panning only makes sense once the image is bigger than the window,
+            # and never in the middle of a left-button gesture.
+            if ($state.Mode -eq 'idle' -and $state.Zoom -gt $fitScale + 1e-9) {
+                $state.Mode    = 'panning'
+                $state.PanFrom = $e.Location
+                $state.PanCX   = $state.CenterX
+                $state.PanCY   = $state.CenterY
+                $form.Cursor   = [System.Windows.Forms.Cursors]::SizeAll
+                $form.Invalidate()
+            }
+            return
+        }
         if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
         $selScr = & $toScr $state.Sel
         $p      = & $toImg $e.Location
@@ -609,8 +816,16 @@ function Select-Region {
     $form.Add_MouseMove({
         param($s, $e)
         $p = & $toImg $e.Location
+        $state.Cursor = $e.Location
+        $state.HasCur = $true
 
         switch ($state.Mode) {
+            'panning' {
+                & $setView $state.Zoom `
+                           ($state.PanCX - ($e.X - $state.PanFrom.X) / $state.Zoom) `
+                           ($state.PanCY - ($e.Y - $state.PanFrom.Y) / $state.Zoom)
+                $form.Invalidate()
+            }
             'drawing' {
                 $state.Sel = New-NormalizedRect -L $state.Anchor.X -T $state.Anchor.Y `
                                                 -R $p.X -B $p.Y -MaxW $imgW -MaxH $imgH
@@ -637,6 +852,9 @@ function Select-Region {
                     $form.Cursor = [System.Windows.Forms.Cursors]::SizeAll
                 }
                 else { $form.Cursor = [System.Windows.Forms.Cursors]::Cross }
+                # The magnifier follows the cursor, so it needs a repaint even
+                # when nothing is being dragged.
+                if ($state.Loupe) { $form.Invalidate() }
             }
         }
     })
@@ -648,7 +866,26 @@ function Select-Region {
             ($state.Sel.Width -lt 2 -or $state.Sel.Height -lt 2)) {
             $state.Sel = New-Object System.Drawing.Rectangle(0, 0, 0, 0)
         }
+        if ($state.Mode -eq 'panning') { $form.Cursor = [System.Windows.Forms.Cursors]::Cross }
         $state.Mode = 'idle'
+        $form.Invalidate()
+    })
+
+    # Wheel zooms around the cursor; the selection lives in image pixels, so it
+    # survives the zoom untouched even mid-drag.
+    $form.Add_MouseWheel({
+        param($s, $e)
+        $step = if ($e.Delta -gt 0) { 1.25 } else { 1 / 1.25 }
+        $new  = $state.Zoom * $step
+        # Snap back to the exact fit instead of stopping just above it.
+        if ($new -lt $fitScale * 1.02) { $new = $fitScale }
+        if ([Math]::Abs($new - $state.Zoom) -lt 1e-9) { return }
+        & $zoomAt $new $e.Location
+        $form.Invalidate()
+    })
+
+    $form.Add_MouseLeave({
+        $state.HasCur = $false
         $form.Invalidate()
     })
 
@@ -671,6 +908,40 @@ function Select-Region {
             & $confirm
             return
         }
+
+        # --- view keys, useful with or without a selection ---
+        $anchor = if ($state.HasCur) { $state.Cursor }
+                  else { New-Object System.Drawing.Point(([int]($screen.Width / 2)), ([int]($screen.Height / 2))) }
+        switch ($e.KeyCode) {
+            { $_ -eq [System.Windows.Forms.Keys]::D0 -or $_ -eq [System.Windows.Forms.Keys]::NumPad0 } {
+                & $setView $fitScale ($imgW / 2.0) ($imgH / 2.0)
+                $e.Handled = $true; $form.Invalidate(); return
+            }
+            { $_ -eq [System.Windows.Forms.Keys]::D1 -or $_ -eq [System.Windows.Forms.Keys]::NumPad1 } {
+                # 100%: centred on the selection if there is one, else on the cursor.
+                if ($state.Sel.Width -gt 0) {
+                    & $setView 1.0 ($state.Sel.X + $state.Sel.Width / 2.0) ($state.Sel.Y + $state.Sel.Height / 2.0)
+                } else {
+                    & $zoomAt 1.0 $anchor
+                }
+                $e.Handled = $true; $form.Invalidate(); return
+            }
+            { $_ -eq [System.Windows.Forms.Keys]::Oemplus -or $_ -eq [System.Windows.Forms.Keys]::Add } {
+                & $zoomAt ($state.Zoom * 1.25) $anchor
+                $e.Handled = $true; $form.Invalidate(); return
+            }
+            { $_ -eq [System.Windows.Forms.Keys]::OemMinus -or $_ -eq [System.Windows.Forms.Keys]::Subtract } {
+                $z = $state.Zoom / 1.25
+                if ($z -lt $fitScale * 1.02) { $z = $fitScale }
+                & $zoomAt $z $anchor
+                $e.Handled = $true; $form.Invalidate(); return
+            }
+            ([System.Windows.Forms.Keys]::M) {
+                $state.Loupe = -not $state.Loupe
+                $e.Handled = $true; $form.Invalidate(); return
+            }
+        }
+
         if ($state.Sel.Width -le 0) { return }
 
         $step = if ($e.Control) { 10 } else { 1 }

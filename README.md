@@ -40,6 +40,23 @@ The readout always shows the size in **real image pixels**, not screen pixels: i
 is larger than your monitor it is displayed scaled down, but one arrow press still moves exactly
 one pixel of the crop.
 
+### Zoom and magnifier
+
+A screenshot bigger than your monitor is shown scaled down, so one screen pixel covers several
+real ones and the mouse alone cannot reach them. Zoom in and it can.
+
+| Action | How |
+|---|---|
+| Zoom in / out around the pointer | mouse wheel (or `+` / `-`) |
+| Fit the whole image again | `0` |
+| Jump to 100% (1 screen pixel = 1 image pixel) | `1` |
+| Pan once zoomed in | drag with the **right** or middle button |
+| Hide or show the magnifier | `M` |
+
+The magnifier follows the pointer and shows the surrounding pixels at 8x, with the edges of the
+selection drawn in, so an edge can be placed on the exact pixel. Zooming never changes the
+selection: it is stored in image pixels, so it survives zoom, pan and the whole adjustment.
+
 ## Details
 
 - **Nothing to install.** Uses PowerShell 5.1, the .NET Framework and GDI+, all shipped with
@@ -78,14 +95,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -STA -File .\SnipBatch.ps1
 |---|---|
 | `SnipBatch.bat` | Launcher. This is the one you run. |
 | `SnipBatch.ps1` | The whole tool: interface, selection and processing. |
-| `tests/run-tests.bat` | Runs the 123 automated tests. |
+| `tests/run-tests.bat` | Runs the 132 automated tests. |
 
 ## Tests
 
 Double-click `tests/run-tests.bat`. They cover the selection geometry (clamping at edges, handles
-dragged past the opposite side, screen↔image conversion), cropping, output formats and
-transparency (tolerance, flattening onto white, JPEG quality, mismatched sizes, name collisions,
-files left unlocked) and the main window (empty folder, missing drive, manual output folder,
-format versus transparency, closing mid-run).
+dragged past the opposite side, screen↔image conversion, zoom and pan clamping), cropping, output
+formats and transparency (tolerance, flattening onto white, JPEG quality, mismatched sizes, name
+collisions, files left unlocked) and the main window (empty folder, missing drive, manual output
+folder, format versus transparency, closing mid-run).
 
 None of them open dialogs or take over the mouse or keyboard, so they can be left running.
