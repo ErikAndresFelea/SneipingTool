@@ -1,12 +1,12 @@
 @echo off
-rem Lanzador de SnipBatch. Doble clic y listo: no requiere instalar nada.
+rem SnipBatch launcher. Double-click and go: nothing needs installing.
 setlocal
 set "PS1=%~dp0SnipBatch.ps1"
 
 if not exist "%PS1%" (
     echo.
-    echo No se encuentra SnipBatch.ps1 junto a este archivo.
-    echo Los dos deben estar en la misma carpeta.
+    echo SnipBatch.ps1 was not found next to this file.
+    echo Both must sit in the same folder.
     echo.
     pause
     exit /b 1

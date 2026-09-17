@@ -1,10 +1,10 @@
 #requires -Version 5.0
 <#
-    SnipBatch - Recorte por lotes estilo "Recortes" de Windows
-    Selecciona una region una vez y se aplica a todas las imagenes de una carpeta.
-    Opcion: convertir el negro en transparente (como "definir color transparente" de Office).
+    SnipBatch - Batch cropping in the style of the Windows Snipping Tool.
+    Pick a region once and it is applied to every image in a folder.
+    Option: turn black into transparency (like Office's "set transparent color").
 
-    No necesita instalar nada: usa PowerShell 5.1 + .NET Framework incluidos en Windows.
+    Nothing to install: uses the PowerShell 5.1 + .NET Framework shipped with Windows.
 #>
 
 Set-StrictMode -Version Latest
@@ -13,24 +13,24 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# El lanzador oculta la consola, asi que un fallo al arrancar (politica de
-# ejecucion, modo restringido, .NET incompleto) dejaria la herramienta sin
-# abrirse y sin decir por que. Este trap lo cuenta en pantalla.
+# The launcher hides the console, so a startup failure (execution policy,
+# constrained language mode, incomplete .NET) would leave the tool never
+# opening and never saying why. This trap reports it on screen.
 trap {
     Write-Error "SnipBatch: $($_.Exception.Message)"
-    # SNIPBATCH_NODIALOG evita el dialogo modal cuando se ejecuta sin nadie
-    # delante (pruebas, tareas programadas): ahi un modal colgaria el proceso.
+    # SNIPBATCH_NODIALOG skips the modal dialog when running unattended
+    # (tests, scheduled tasks): a modal there would hang the process forever.
     if (-not $env:SNIPBATCH_NODIALOG) {
         [void][System.Windows.Forms.MessageBox]::Show(
-            "SnipBatch no pudo arrancar:`n`n$($_.Exception.Message)",
+            "SnipBatch could not start:`n`n$($_.Exception.Message)",
             'SnipBatch', 'OK', 'Error')
     }
     break
 }
 
-# --- Helpers nativos -------------------------------------------------------
-# El trabajo por pixel se hace en C# compilado al vuelo: en PowerShell puro
-# un bucle sobre 8 millones de bytes tardaria decenas de segundos por imagen.
+# --- Native helpers --------------------------------------------------------
+# Per-pixel work is done in C# compiled on the fly: in plain PowerShell a loop
+# over 8 million bytes would take tens of seconds per image.
 Add-Type -ReferencedAssemblies System.Drawing, System.Windows.Forms -TypeDefinition @'
 using System;
 using System.Drawing;
@@ -48,8 +48,8 @@ public static class SnipBatchNative
         try { SetProcessDPIAware(); } catch { }
     }
 
-    // Pone alpha = 0 en todo pixel cuyos canales R, G y B esten por debajo
-    // de la tolerancia (negro puro = 0). El bitmap debe ser 32bpp ARGB.
+    // Sets alpha = 0 on every pixel whose R, G and B channels are all below
+    // the tolerance (pure black = 0). The bitmap must be 32bpp ARGB.
     public static int BlackToAlpha(Bitmap bmp, int tolerance)
     {
         Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
@@ -61,7 +61,7 @@ public static class SnipBatchNative
             Marshal.Copy(data.Scan0, buf, 0, len);
 
             int hits = 0;
-            for (int i = 0; i < len; i += 4)   // orden en memoria: B G R A
+            for (int i = 0; i < len; i += 4)   // memory order: B G R A
             {
                 if (buf[i] <= tolerance && buf[i + 1] <= tolerance && buf[i + 2] <= tolerance)
                 {
@@ -77,8 +77,8 @@ public static class SnipBatchNative
     }
 }
 
-// Form con doble buffer: DoubleBuffered es protegida y no se puede asignar
-// desde PowerShell, asi que se activa aqui para que el overlay no parpadee.
+// Double-buffered form: DoubleBuffered is protected and cannot be assigned
+// from PowerShell, so it is enabled here to keep the overlay from flickering.
 public class BufferedForm : Form
 {
     public BufferedForm()
@@ -89,8 +89,8 @@ public class BufferedForm : Form
                     | ControlStyles.UserPaint, true);
     }
 
-    // Sin esto las flechas se tratan como navegacion de dialogo y nunca
-    // llegan a KeyDown, asi que no se podria afinar la seleccion al pixel.
+    // Without this the arrow keys are treated as dialog navigation and never
+    // reach KeyDown, so the selection could not be nudged pixel by pixel.
     protected override bool IsInputKey(Keys keyData)
     {
         Keys k = keyData & Keys.KeyCode;
@@ -106,13 +106,13 @@ public class BufferedForm : Form
 
 $EXTENSIONS = @('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff')
 
-# Devuelve SIEMPRE un array. Ojo: "return @()" no vale, PowerShell desenrolla
-# el array vacio y el llamante recibe $null; con Set-StrictMode, un $null.Count
-# es excepcion, y una carpeta sin imagenes tumbaba el manejador de eventos.
-# El operador coma envuelve el array para que llegue entero.
-# Test-Path lanza excepcion si la UNIDAD no existe (un USB retirado, una unidad
-# de red caida): no devuelve $false. Con ErrorActionPreference = Stop eso tumba
-# la herramienta desde dentro de un manejador de eventos, asi que se envuelve.
+# ALWAYS returns an array. Careful: "return @()" does not work, PowerShell
+# unrolls the empty array and the caller gets $null; under Set-StrictMode a
+# $null.Count throws, and a folder with no images crashed the event handler.
+# The comma operator wraps the array so it arrives intact.
+# Test-Path throws if the DRIVE does not exist (an unplugged USB stick, a
+# dropped network drive): it does not return $false. With ErrorActionPreference
+# = Stop that kills the tool from inside an event handler, so it is wrapped.
 function Test-FolderExists {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -131,10 +131,10 @@ function Get-ImageFiles {
                     Sort-Object Name)
         return ,$found
     }
-    catch { return ,$none }   # carpeta sin permisos, unidad desconectada...
+    catch { return ,$none }   # no permissions, disconnected drive...
 }
 
-# Carga una imagen sin dejar el archivo bloqueado (Image.FromFile mantiene el handle abierto).
+# Loads an image without locking the file (Image.FromFile keeps the handle open).
 function Open-ImageNoLock {
     param([string]$Path)
     $bytes  = [System.IO.File]::ReadAllBytes($Path)
@@ -143,16 +143,16 @@ function Open-ImageNoLock {
     [pscustomobject]@{ Image = $img; Stream = $stream }
 }
 
-# --- Geometria de la seleccion ---------------------------------------------
-# Todo se calcula en PIXELES DE LA IMAGEN, no de pantalla: asi las flechas
-# mueven exactamente un pixel del recorte aunque la imagen se vea reducida,
-# y no hay perdida por redondeo al convertir de un espacio a otro.
-# Son funciones puras, sin UI, para poder probarlas sin abrir ventanas.
+# --- Selection geometry ----------------------------------------------------
+# Everything is computed in IMAGE PIXELS, not screen pixels: that way the arrow
+# keys move exactly one pixel of the crop even when the image is displayed
+# scaled down, and nothing is lost to rounding between the two spaces.
+# These are pure functions, no UI, so they can be tested without opening windows.
 
 function New-NormalizedRect {
     param([int]$L, [int]$T, [int]$R, [int]$B, [int]$MaxW, [int]$MaxH)
-    # El origen tambien se acota por arriba: un rectangulo entero fuera de la
-    # imagen debe pegarse al borde, no quedarse en coordenadas imposibles.
+    # The origin is clamped at the top end too: a rectangle entirely outside the
+    # image must stick to the edge, not sit at impossible coordinates.
     $x1 = [Math]::Min([Math]::Max([Math]::Min($L, $R), 0), $MaxW)
     $y1 = [Math]::Min([Math]::Max([Math]::Min($T, $B), 0), $MaxH)
     $x2 = [Math]::Min([Math]::Max($L, $R), $MaxW)
@@ -178,7 +178,7 @@ function Get-HandlePoints {
     }
 }
 
-# Que tirador hay bajo el punto (todo en coordenadas de pantalla).
+# Which handle sits under the point (all in screen coordinates).
 function Get-HandleAt {
     param([System.Drawing.Rectangle]$Rect, [System.Drawing.Point]$Point, [int]$Grab = 9)
     if ($Rect.Width -le 0 -or $Rect.Height -le 0) { return '' }
@@ -204,7 +204,7 @@ function Get-CursorForHandle {
     }
 }
 
-# Al cruzar el lado opuesto, el tirador pasa a ser el de enfrente.
+# When dragged past the opposite side, the handle becomes the facing one.
 function Get-FlippedHandle {
     param([string]$Handle, [bool]$FlipX, [bool]$FlipY)
     $h = $Handle
@@ -235,7 +235,7 @@ function Get-ResizedRect {
     }
 }
 
-# Mueve el rectangulo entero sin deformarlo, sin salirse de la imagen.
+# Moves the whole rectangle without reshaping it, kept inside the image.
 function Get-MovedRect {
     param([System.Drawing.Rectangle]$Rect, [int]$X, [int]$Y, [int]$MaxW, [int]$MaxH)
     $nx = [Math]::Max(0, [Math]::Min($X, $MaxW - $Rect.Width))
@@ -249,8 +249,8 @@ function Get-NudgedRect {
         [bool]$Resize, [int]$MaxW, [int]$MaxH
     )
     if ($Resize) {
-        # El borde derecho/inferior nunca cruza al izquierdo/superior: al
-        # encoger se queda en cero en vez de invertirse y crecer al reves.
+        # The right/bottom edge never crosses the left/top one: when shrinking
+        # it stops at zero instead of flipping and growing the other way.
         $r = [Math]::Max($Rect.Left, $Rect.Right  + $Dx)
         $b = [Math]::Max($Rect.Top,  $Rect.Bottom + $Dy)
         return (New-NormalizedRect -L $Rect.Left -T $Rect.Top -R $r -B $b -MaxW $MaxW -MaxH $MaxH)
@@ -276,11 +276,11 @@ function ConvertTo-ImagePoint {
         [Math]::Max(0, [Math]::Min($y, $MaxH)))
 }
 
-# --- Formato de salida -----------------------------------------------------
-# Solo PNG tiene canal alfa de verdad. BMP admite 32 bits con alfa pero casi
-# ningun visor lo respeta, y JPEG no lo admite en absoluto, asi que ambos se
-# aplanan sobre blanco antes de guardar: mejor eso que una transparencia que
-# el usuario cree tener y aparece en negro al pegarla.
+# --- Output format ---------------------------------------------------------
+# Only PNG has a real alpha channel. BMP allows 32-bit with alpha but almost no
+# viewer honours it, and JPEG has none at all, so both are flattened onto white
+# before saving: better that than transparency the user believes they have and
+# which shows up black once pasted.
 function Get-FormatInfo {
     param([string]$Name)
     switch ("$Name".ToUpperInvariant()) {
@@ -305,7 +305,7 @@ function Save-CropBitmap {
         return
     }
 
-    # Aplanado sobre blanco y a 24 bits: archivos mas pequenos y compatibles.
+    # Flattened onto white at 24 bits: smaller and more compatible files.
     $flat = New-Object System.Drawing.Bitmap($Bitmap.Width, $Bitmap.Height,
                 [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
     try {
@@ -318,7 +318,7 @@ function Save-CropBitmap {
             $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() |
                         Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
             if ($null -eq $codec) { $flat.Save($Path, $info.Format); return }
-            # Sin esto GDI+ guarda a calidad 75 y las capturas con texto se ven sucias.
+            # Without this GDI+ saves at quality 75 and text in screenshots smears.
             $ep = New-Object System.Drawing.Imaging.EncoderParameters(1)
             try {
                 $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter(
@@ -332,8 +332,8 @@ function Save-CropBitmap {
     finally { $flat.Dispose() }
 }
 
-# Dos archivos con el mismo nombre y distinta extension (shot.png y shot.jpg)
-# generarian el mismo PNG de salida y uno pisaria al otro sin avisar.
+# Two files sharing a name with different extensions (shot.png and shot.jpg)
+# would produce the same output file and one would silently overwrite the other.
 function Get-UniqueName {
     param([string]$BaseName, [System.Collections.Generic.HashSet[string]]$Used)
     $name = $BaseName
@@ -346,10 +346,10 @@ function Get-UniqueName {
     return $name
 }
 
-# --- Ventana de seleccion (overlay a pantalla completa) --------------------
-# Se dibuja un rectangulo arrastrando. Al soltar el raton NO se confirma:
-# queda ajustable con los 8 tiradores, se puede mover arrastrandolo por dentro
-# y afinar con las flechas. Enter confirma, Esc cancela.
+# --- Selection window (full-screen overlay) --------------------------------
+# The rectangle is drawn by dragging. Releasing the mouse does NOT confirm it:
+# it stays adjustable through the 8 handles, can be moved by dragging from
+# inside, and nudged with the arrow keys. Enter confirms, Esc cancels.
 function Select-Region {
     param([System.Drawing.Image]$Image)
 
@@ -357,17 +357,17 @@ function Select-Region {
     $imgW   = $Image.Width
     $imgH   = $Image.Height
 
-    # La imagen se dibuja escalada para caber en pantalla, nunca ampliada.
+    # The image is drawn scaled to fit the screen, never enlarged.
     $scale = [Math]::Min($screen.Width / $imgW, $screen.Height / $imgH)
     if ($scale -gt 1) { $scale = 1.0 }
-    # Con relaciones de aspecto extremas el redondeo puede dar 0 y Bitmap falla.
+    # With extreme aspect ratios the rounding can reach 0 and Bitmap throws.
     $drawW = [Math]::Max(1, [int]($imgW * $scale))
     $drawH = [Math]::Max(1, [int]($imgH * $scale))
     $offX  = [int](($screen.Width  - $drawW) / 2)
     $offY  = [int](($screen.Height - $drawH) / 2)
 
-    # Se reescala UNA vez: repetir la interpolacion en cada Paint hace que el
-    # arrastre vaya a tirones con capturas grandes.
+    # Rescaled ONCE: redoing the interpolation on every Paint makes dragging
+    # stutter with large screenshots.
     $canvas = New-Object System.Drawing.Bitmap($drawW, $drawH, [System.Drawing.Imaging.PixelFormat]::Format32bppPArgb)
     $cg = [System.Drawing.Graphics]::FromImage($canvas)
     $cg.InterpolationMode = 'HighQualityBicubic'
@@ -376,12 +376,12 @@ function Select-Region {
                   [System.Drawing.GraphicsUnit]::Pixel)
     $cg.Dispose()
 
-    $GRAB = 9   # radio de agarre de los tiradores, en px de pantalla
+    $GRAB = 9   # grab radius of the handles, in screen px
 
     $state = [pscustomobject]@{
         Mode    = 'idle'      # idle | drawing | moving | resizing
-        Sel     = New-Object System.Drawing.Rectangle(0, 0, 0, 0)   # px de imagen
-        Anchor  = New-Object System.Drawing.Point(0, 0)             # px de imagen
+        Sel     = New-Object System.Drawing.Rectangle(0, 0, 0, 0)   # image px
+        Anchor  = New-Object System.Drawing.Point(0, 0)             # image px
         Handle  = ''
         MoveOff = New-Object System.Drawing.Point(0, 0)
         Result  = $null
@@ -399,7 +399,7 @@ function Select-Region {
     $form.Cursor          = [System.Windows.Forms.Cursors]::Cross
     $form.KeyPreview      = $true
 
-    # Sin foco no llegan ni las flechas ni Esc, y el overlay se quedaria colgado.
+    # Without focus neither the arrows nor Esc arrive, and the overlay would hang.
     $form.Add_Shown({ $form.Activate(); [void]$form.Focus() })
 
     $confirm = {
@@ -451,9 +451,9 @@ function Select-Region {
         }
 
         $hint = if ($state.Sel.Width -gt 0) {
-            'Ajusta con los tiradores  o  arrastra dentro para mover  -  flechas afinan (Ctrl = 10 px)  -  ENTER confirma  -  Esc cancela'
+            'Drag the handles to resize  or  drag inside to move  -  arrows nudge (Ctrl = 10 px)  -  ENTER confirms  -  Esc cancels'
         } else {
-            'Arrastra para seleccionar la region  -  Esc cancela'
+            'Drag to select the region  -  Esc cancels'
         }
         $hf = New-Object System.Drawing.Font ('Segoe UI', 11)
         $hs = $g.MeasureString($hint, $hf)
@@ -523,7 +523,7 @@ function Select-Region {
         }
     })
 
-    # Al soltar solo termina el gesto: la seleccion queda viva para ajustarla.
+    # Releasing only ends the gesture: the selection stays live for adjusting.
     $form.Add_MouseUp({
         param($s, $e)
         if ($state.Mode -eq 'drawing' -and
@@ -566,7 +566,7 @@ function Select-Region {
         }
         $e.Handled = $true
 
-        # Shift = redimensionar por el borde derecho / inferior
+        # Shift = resize from the right / bottom edge
         $state.Sel = Get-NudgedRect -Rect $state.Sel -Dx $dx -Dy $dy `
                                     -Resize ([bool]$e.Shift) -MaxW $imgW -MaxH $imgH
         $form.Invalidate()
@@ -580,7 +580,7 @@ function Select-Region {
     return $state.Result
 }
 
-# --- Procesado -------------------------------------------------------------
+# --- Processing ------------------------------------------------------------
 function Invoke-Crop {
     param(
         [string]$Path,
@@ -594,7 +594,7 @@ function Invoke-Crop {
     )
 
     if ($RefWidth -le 0 -or $RefHeight -le 0) {
-        return [pscustomobject]@{ Ok = $false; Message = 'sin imagen de referencia' }
+        return [pscustomobject]@{ Ok = $false; Message = 'no reference image' }
     }
 
     $loaded = Open-ImageNoLock -Path $Path
@@ -602,8 +602,8 @@ function Invoke-Crop {
         $img = $loaded.Image
         $r   = $Region
 
-        # Si la imagen no mide lo mismo que la de referencia, la region se
-        # reescala proporcionalmente en vez de fallar.
+        # If the image does not match the reference size, the region is scaled
+        # proportionally instead of failing.
         $scaled = $false
         if ($img.Width -ne $RefWidth -or $img.Height -ne $RefHeight) {
             $sx = $img.Width  / [double]$RefWidth
@@ -614,19 +614,19 @@ function Invoke-Crop {
             $scaled = $true
         }
 
-        # Recorte a los limites reales de esta imagen
+        # Clamped to this image's actual bounds
         $x = [Math]::Max(0, $r.X); $y = [Math]::Max(0, $r.Y)
         $w = [Math]::Min($r.Width,  $img.Width  - $x)
         $h = [Math]::Min($r.Height, $img.Height - $y)
         if ($w -le 0 -or $h -le 0) {
-            return [pscustomobject]@{ Ok = $false; Message = 'la region queda fuera de la imagen' }
+            return [pscustomobject]@{ Ok = $false; Message = 'region falls outside this image' }
         }
 
         $dest = New-Object System.Drawing.Bitmap($w, $h, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
         try {
             $g = [System.Drawing.Graphics]::FromImage($dest)
             $g.PixelOffsetMode    = 'HighQuality'
-            $g.InterpolationMode  = 'NearestNeighbor'   # recorte 1:1, sin suavizar
+            $g.InterpolationMode  = 'NearestNeighbor'   # 1:1 crop, no smoothing
             $g.CompositingMode    = 'SourceCopy'
             $srcRect = New-Object System.Drawing.Rectangle($x, $y, $w, $h)
             $dstRect = New-Object System.Drawing.Rectangle(0, 0, $w, $h)
@@ -640,7 +640,7 @@ function Invoke-Crop {
             Save-CropBitmap -Bitmap $dest -Path $OutPath -Format $Format
 
             $msg = "$w x $h"
-            if ($scaled) { $msg += ' (region reescalada)' }
+            if ($scaled) { $msg += ' (region rescaled)' }
             return [pscustomobject]@{ Ok = $true; Message = $msg }
         }
         finally { $dest.Dispose() }
@@ -651,31 +651,31 @@ function Invoke-Crop {
     }
 }
 
-# --- Ventana principal -----------------------------------------------------
+# --- Main window -----------------------------------------------------------
 $ui = [pscustomobject]@{
     Folder    = ''
-    OutFolder = ''      # vacio = automatica: <origen>\recortadas
+    OutFolder = ''      # empty = automatic: <source>\crops
     Region    = $null
     RefWidth  = 0
     RefHeight = 0
     Busy      = $false
     Stop      = $false
-    WantAlpha = $false   # lo que el usuario marco, para restaurarlo al volver a PNG
+    WantAlpha = $false   # what the user ticked, to restore when going back to PNG
 }
 
-# La carpeta de salida es explicita: por defecto una subcarpeta del origen,
-# pero se puede apuntar a cualquier sitio para no tocar la carpeta original.
-# Join-Path consulta el proveedor de PowerShell y lanza DriveNotFoundException
-# si la unidad ya no esta (USB retirado, unidad de red caida). Path::Combine es
-# manipulacion de cadenas pura y nunca falla por eso.
+# The output folder is explicit: a subfolder of the source by default, but it
+# can point anywhere so the original folder is never touched.
+# Join-Path queries the PowerShell provider and throws DriveNotFoundException if
+# the drive is gone (unplugged USB, dropped network drive). Path::Combine is
+# pure string manipulation and never fails for that reason.
 function Resolve-OutFolder {
     if (-not [string]::IsNullOrWhiteSpace($ui.OutFolder)) { return $ui.OutFolder }
     if ([string]::IsNullOrWhiteSpace($ui.Folder)) { return '' }
-    return [System.IO.Path]::Combine($ui.Folder, 'recortadas')
+    return [System.IO.Path]::Combine($ui.Folder, 'crops')
 }
 
 $main = New-Object System.Windows.Forms.Form
-$main.Text            = 'SnipBatch - recorte por lotes'
+$main.Text            = 'SnipBatch - batch crop'
 $main.Size            = New-Object System.Drawing.Size(620, 590)
 $main.StartPosition   = 'CenterScreen'
 $main.FormBorderStyle = 'FixedSingle'
@@ -683,7 +683,7 @@ $main.MaximizeBox     = $false
 $main.Font            = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $lblFolder = New-Object System.Windows.Forms.Label
-$lblFolder.Text     = '1. Carpeta con las imagenes'
+$lblFolder.Text     = '1. Source folder'
 $lblFolder.Location = New-Object System.Drawing.Point(14, 14)
 $lblFolder.AutoSize = $true
 
@@ -693,7 +693,7 @@ $txtFolder.Size     = New-Object System.Drawing.Size(480, 24)
 $txtFolder.ReadOnly = $true
 
 $btnFolder = New-Object System.Windows.Forms.Button
-$btnFolder.Text     = 'Examinar...'
+$btnFolder.Text     = 'Browse...'
 $btnFolder.Location = New-Object System.Drawing.Point(500, 35)
 $btnFolder.Size     = New-Object System.Drawing.Size(90, 25)
 
@@ -701,10 +701,10 @@ $lblCount = New-Object System.Windows.Forms.Label
 $lblCount.Location  = New-Object System.Drawing.Point(14, 64)
 $lblCount.Size      = New-Object System.Drawing.Size(576, 18)
 $lblCount.ForeColor = [System.Drawing.Color]::DimGray
-$lblCount.Text      = 'Sin carpeta seleccionada.'
+$lblCount.Text      = 'No folder selected.'
 
 $lblOut = New-Object System.Windows.Forms.Label
-$lblOut.Text     = '2. Carpeta donde guardar los recortes'
+$lblOut.Text     = '2. Folder to save the crops in'
 $lblOut.Location = New-Object System.Drawing.Point(14, 90)
 $lblOut.AutoSize = $true
 
@@ -714,12 +714,12 @@ $txtOut.Size     = New-Object System.Drawing.Size(390, 24)
 $txtOut.ReadOnly = $true
 
 $btnOut = New-Object System.Windows.Forms.Button
-$btnOut.Text     = 'Examinar...'
+$btnOut.Text     = 'Browse...'
 $btnOut.Location = New-Object System.Drawing.Point(410, 111)
 $btnOut.Size     = New-Object System.Drawing.Size(85, 25)
 
 $btnOutReset = New-Object System.Windows.Forms.Button
-$btnOutReset.Text     = 'Predeterminada'
+$btnOutReset.Text     = 'Default'
 $btnOutReset.Location = New-Object System.Drawing.Point(500, 111)
 $btnOutReset.Size     = New-Object System.Drawing.Size(90, 25)
 
@@ -727,10 +727,10 @@ $lblOutHint = New-Object System.Windows.Forms.Label
 $lblOutHint.Location  = New-Object System.Drawing.Point(14, 140)
 $lblOutHint.Size      = New-Object System.Drawing.Size(576, 18)
 $lblOutHint.ForeColor = [System.Drawing.Color]::DimGray
-$lblOutHint.Text      = 'Por defecto: subcarpeta "recortadas" dentro del origen. Se crea sola si no existe.'
+$lblOutHint.Text      = 'Default: a "crops" subfolder inside the source. Created automatically if missing.'
 
 $btnRegion = New-Object System.Windows.Forms.Button
-$btnRegion.Text     = '3. Seleccionar region...'
+$btnRegion.Text     = '3. Select region...'
 $btnRegion.Location = New-Object System.Drawing.Point(14, 166)
 $btnRegion.Size     = New-Object System.Drawing.Size(180, 32)
 $btnRegion.Enabled  = $false
@@ -739,15 +739,15 @@ $lblRegion = New-Object System.Windows.Forms.Label
 $lblRegion.Location  = New-Object System.Drawing.Point(204, 174)
 $lblRegion.Size      = New-Object System.Drawing.Size(386, 20)
 $lblRegion.ForeColor = [System.Drawing.Color]::DimGray
-$lblRegion.Text      = 'Ninguna region definida.'
+$lblRegion.Text      = 'No region defined.'
 
 $grp = New-Object System.Windows.Forms.GroupBox
-$grp.Text     = 'Opciones'
+$grp.Text     = 'Options'
 $grp.Location = New-Object System.Drawing.Point(14, 208)
 $grp.Size     = New-Object System.Drawing.Size(576, 106)
 
 $lblFmt = New-Object System.Windows.Forms.Label
-$lblFmt.Text     = 'Formato de salida:'
+$lblFmt.Text     = 'Output format:'
 $lblFmt.Location = New-Object System.Drawing.Point(14, 25)
 $lblFmt.AutoSize = $true
 
@@ -764,12 +764,12 @@ $lblFmtHint.Size      = New-Object System.Drawing.Size(330, 18)
 $lblFmtHint.ForeColor = [System.Drawing.Color]::DimGray
 
 $chkAlpha = New-Object System.Windows.Forms.CheckBox
-$chkAlpha.Text     = 'Convertir el negro en transparente'
+$chkAlpha.Text     = 'Turn black into transparency'
 $chkAlpha.Location = New-Object System.Drawing.Point(14, 50)
 $chkAlpha.Size     = New-Object System.Drawing.Size(240, 22)
 
 $lblTol = New-Object System.Windows.Forms.Label
-$lblTol.Text     = 'Tolerancia (0 = negro puro):'
+$lblTol.Text     = 'Tolerance (0 = pure black):'
 $lblTol.Location = New-Object System.Drawing.Point(14, 78)
 $lblTol.AutoSize = $true
 
@@ -782,7 +782,7 @@ $numTol.Value    = 12
 $numTol.Enabled  = $false
 
 $lblTolHint = New-Object System.Windows.Forms.Label
-$lblTolHint.Text      = 'sube si quedan bordes oscuros'
+$lblTolHint.Text      = 'raise it if dark edges remain'
 $lblTolHint.Location  = New-Object System.Drawing.Point(250, 78)
 $lblTolHint.AutoSize  = $true
 $lblTolHint.ForeColor = [System.Drawing.Color]::DimGray
@@ -790,7 +790,7 @@ $lblTolHint.ForeColor = [System.Drawing.Color]::DimGray
 $grp.Controls.AddRange(@($lblFmt, $cmbFormat, $lblFmtHint, $chkAlpha, $lblTol, $numTol, $lblTolHint))
 
 $btnRun = New-Object System.Windows.Forms.Button
-$btnRun.Text     = '4. Procesar todas'
+$btnRun.Text     = '4. Process all'
 $btnRun.Location = New-Object System.Drawing.Point(14, 324)
 $btnRun.Size     = New-Object System.Drawing.Size(180, 34)
 $btnRun.Enabled  = $false
@@ -820,10 +820,10 @@ function Write-Log {
 function Update-OutBox {
     $txtOut.Text = Resolve-OutFolder
     if ([string]::IsNullOrWhiteSpace($ui.OutFolder)) {
-        $lblOutHint.Text = 'Por defecto: subcarpeta "recortadas" dentro del origen. Se crea sola si no existe.'
+        $lblOutHint.Text = 'Default: a "crops" subfolder inside the source. Created automatically if missing.'
     }
     else {
-        $lblOutHint.Text = 'Carpeta de salida fija. "Predeterminada" vuelve a la subcarpeta del origen.'
+        $lblOutHint.Text = 'Fixed output folder. "Default" goes back to the subfolder inside the source.'
     }
 }
 
@@ -831,20 +831,20 @@ function Update-RunState {
     $btnRun.Enabled = ($null -ne $ui.Region) -and ((Get-ImageFiles $ui.Folder).Count -gt 0)
 }
 
-# JPG y BMP no llevan alfa: en vez de perder la transparencia en silencio, la
-# casilla se deshabilita y se recuerda la eleccion para cuando se vuelva a PNG.
+# JPG and BMP carry no alpha: rather than losing transparency silently, the
+# checkbox is disabled and the choice remembered for the return to PNG.
 function Update-FormatState {
     $info = Get-FormatInfo $cmbFormat.SelectedItem
     if ($info.SupportsAlpha) {
         $chkAlpha.Enabled = $true
         $chkAlpha.Checked = $ui.WantAlpha
-        $lblFmtHint.Text  = 'PNG conserva la transparencia.'
+        $lblFmtHint.Text  = 'PNG preserves transparency.'
     }
     else {
-        # Deshabilitar ANTES de desmarcar: si no, el evento pisaria WantAlpha.
+        # Disable BEFORE unticking: otherwise the event would overwrite WantAlpha.
         $chkAlpha.Enabled = $false
         $chkAlpha.Checked = $false
-        $lblFmtHint.Text  = "$($info.Name) no admite transparencia: se guarda opaco sobre blanco."
+        $lblFmtHint.Text  = "$($info.Name) has no alpha channel: saved opaque over white."
     }
     $numTol.Enabled = $chkAlpha.Checked
 }
@@ -856,25 +856,25 @@ $chkAlpha.Add_CheckedChanged({
 
 $cmbFormat.Add_SelectedIndexChanged({ Update-FormatState })
 
-# Separado del manejador para poder probarlo sin abrir el dialogo de carpetas.
+# Split out of the handler so it can be tested without opening the folder dialog.
 function Set-SourceFolder {
     param([string]$Path)
 
     $ui.Folder      = $Path
     $txtFolder.Text = $Path
-    $ui.Region      = $null      # la region vieja no vale para otras capturas
+    $ui.Region      = $null      # the old region is meaningless for other screenshots
     $ui.RefWidth    = 0
     $ui.RefHeight   = 0
-    $lblRegion.Text = 'Ninguna region definida.'
+    $lblRegion.Text = 'No region defined.'
     $lblRegion.ForeColor = [System.Drawing.Color]::DimGray
 
     $files = Get-ImageFiles $Path
     if ($files.Count -eq 0) {
-        $lblCount.Text     = 'No hay imagenes compatibles en esa carpeta.'
+        $lblCount.Text     = 'No supported images in that folder.'
         $btnRegion.Enabled = $false
     }
     else {
-        $lblCount.Text     = "$($files.Count) imagen(es) encontradas. Referencia: $($files[0].Name)"
+        $lblCount.Text     = "$($files.Count) image(s) found. Reference: $($files[0].Name)"
         $btnRegion.Enabled = $true
     }
     Update-OutBox
@@ -883,14 +883,14 @@ function Set-SourceFolder {
 
 $btnFolder.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'Carpeta con las capturas'
+    $dlg.Description = 'Folder holding the screenshots'
     if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
     Set-SourceFolder -Path $dlg.SelectedPath
 })
 
 $btnOut.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'Carpeta donde guardar los recortes'
+    $dlg.Description = 'Folder to save the crops in'
     $dlg.ShowNewFolderButton = $true
     $current = Resolve-OutFolder
     if (Test-FolderExists $current) { $dlg.SelectedPath = $current }
@@ -924,14 +924,14 @@ $btnRegion.Add_Click({
     }
 
     if ($null -eq $region) {
-        Write-Log 'Seleccion cancelada.'
+        Write-Log 'Selection cancelled.'
         return
     }
 
     $ui.Region = $region
-    $lblRegion.Text = "Region: $($region.Width) x $($region.Height) px  en  X=$($region.X), Y=$($region.Y)"
+    $lblRegion.Text = "Region: $($region.Width) x $($region.Height) px  at  X=$($region.X), Y=$($region.Y)"
     $lblRegion.ForeColor = [System.Drawing.Color]::Black
-    Write-Log "Region definida sobre $($files[0].Name) ($($ui.RefWidth)x$($ui.RefHeight)): $($region.Width)x$($region.Height) @ $($region.X),$($region.Y)"
+    Write-Log "Region defined on $($files[0].Name) ($($ui.RefWidth)x$($ui.RefHeight)): $($region.Width)x$($region.Height) @ $($region.X),$($region.Y)"
     Update-RunState
 })
 
@@ -941,19 +941,19 @@ $btnRun.Add_Click({
 
     $outFolder = Resolve-OutFolder
 
-    # Guardar en la propia carpeta de origen pisaria los PNG originales.
-    $mismaCarpeta = $false
+    # Saving into the source folder itself would overwrite the originals.
+    $sameFolder = $false
     try {
-        $mismaCarpeta = ([System.IO.Path]::GetFullPath($ui.Folder).TrimEnd([char]92) -eq
+        $sameFolder = ([System.IO.Path]::GetFullPath($ui.Folder).TrimEnd([char]92) -eq
                          [System.IO.Path]::GetFullPath($outFolder).TrimEnd([char]92))
     }
-    catch { $mismaCarpeta = $false }   # ruta rara: se sigue, el guardado ya avisara
-    if ($mismaCarpeta) {
+    catch { $sameFolder = $false }   # odd path: carry on, saving will report it
+    if ($sameFolder) {
         $warn = [System.Windows.Forms.MessageBox]::Show(
-            ("La carpeta de salida es la misma que la de origen.`n`nLos recortes se guardan con el mismo nombre y extension {0}, asi que cualquier original de esa carpeta con ese nombre quedara sobrescrito y no se podra recuperar.`n`nContinuar de todas formas?" -f (Get-FormatInfo $cmbFormat.SelectedItem).Extension),
-            'SnipBatch - cuidado', 'YesNo', 'Warning', 'Button2')
+            ("The output folder is the same as the source.`n`nCrops are saved under the same name with the {0} extension, so any original in that folder with that name will be overwritten and cannot be recovered.`n`nContinue anyway?" -f (Get-FormatInfo $cmbFormat.SelectedItem).Extension),
+            'SnipBatch - careful', 'YesNo', 'Warning', 'Button2')
         if ($warn -ne [System.Windows.Forms.DialogResult]::Yes) {
-            Write-Log 'Cancelado: la salida apuntaba a la carpeta de origen.'
+            Write-Log 'Cancelled: the output pointed at the source folder.'
             return
         }
     }
@@ -965,7 +965,7 @@ $btnRun.Add_Click({
     }
     catch {
         [void][System.Windows.Forms.MessageBox]::Show(
-            "No se pudo crear la carpeta de salida:`n$outFolder`n`n$($_.Exception.Message)",
+            "Could not create the output folder:`n$outFolder`n`n$($_.Exception.Message)",
             'SnipBatch', 'OK', 'Error')
         return
     }
@@ -975,7 +975,7 @@ $btnRun.Add_Click({
     $progress.Value   = 0
     $progress.Maximum = $files.Count
     Write-Log ''
-    Write-Log "--- Procesando $($files.Count) imagen(es) en $((Get-FormatInfo $cmbFormat.SelectedItem).Name) -> $outFolder"
+    Write-Log "--- Processing $($files.Count) image(s) as $((Get-FormatInfo $cmbFormat.SelectedItem).Name) -> $outFolder"
 
     $ok = 0; $fail = 0
     $fmt  = Get-FormatInfo $cmbFormat.SelectedItem
@@ -984,7 +984,7 @@ $btnRun.Add_Click({
     $ui.Stop = $false
     try {
         foreach ($f in $files) {
-            if ($ui.Stop) { Write-Log '--- Interrumpido por el usuario.'; break }
+            if ($ui.Stop) { Write-Log '--- Interrupted by the user.'; break }
             try {
                 $base = Get-UniqueName -Used $used `
                             -BaseName ([System.IO.Path]::GetFileNameWithoutExtension($f.Name))
@@ -994,7 +994,7 @@ $btnRun.Add_Click({
                                  -BlackToAlpha $chkAlpha.Checked -Tolerance ([int]$numTol.Value) `
                                  -Format $fmt.Name
                 if ($r.Ok) { $ok++;   Write-Log ("  OK    {0}  [{1}]" -f $f.Name, $r.Message) }
-                else       { $fail++; Write-Log ("  SALTA {0}  [{1}]" -f $f.Name, $r.Message) }
+                else       { $fail++; Write-Log ("  SKIP  {0}  [{1}]" -f $f.Name, $r.Message) }
             }
             catch {
                 $fail++
@@ -1006,26 +1006,26 @@ $btnRun.Add_Click({
     }
     finally { $ui.Busy = $false }
 
-    Write-Log "--- Listo: $ok correcta(s), $fail con problemas."
+    Write-Log "--- Done: $ok succeeded, $fail with problems."
     $btnRun.Enabled = $true; $btnRegion.Enabled = $true
     $btnFolder.Enabled = $true; $btnOut.Enabled = $true; $btnOutReset.Enabled = $true
 
-    # Si cerraron la ventana a mitad, ahora se cierra de verdad, sin mas dialogos.
+    # If the window was closed mid-run, close it for real now, with no more dialogs.
     if ($ui.Stop) { $main.Close(); return }
 
     if ($ok -gt 0) {
         $ask = [System.Windows.Forms.MessageBox]::Show(
-            "$ok imagen(es) guardadas en:`n$outFolder`n`nAbrir la carpeta?",
+            "$ok image(s) saved to:`n$outFolder`n`nOpen the folder?",
             'SnipBatch', 'YesNo', 'Information')
         if ($ask -eq [System.Windows.Forms.DialogResult]::Yes) {
-            # Sin comillas, una ruta con espacios llega partida y explorer abre otra cosa.
+            # Unquoted, a path with spaces arrives split and explorer opens the wrong thing.
             Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $outFolder)
         }
     }
 })
 
-# DoEvents permite seguir usando la ventana mientras se procesa: si la cierran
-# a mitad, el bucle seguiria escribiendo en controles ya destruidos.
+# DoEvents keeps the window usable while processing: if it is closed mid-run,
+# the loop would go on writing to controls that have already been disposed.
 $main.Add_FormClosing({
     param($s, $e)
     if ($ui.Busy) {
@@ -1034,9 +1034,9 @@ $main.Add_FormClosing({
     }
 })
 
-Write-Log 'SnipBatch listo.'
-Write-Log '1) Carpeta de origen  2) Carpeta de salida  3) Region  4) Procesar.'
-Write-Log 'En la seleccion: arrastra, ajusta con los tiradores y pulsa ENTER para confirmar.'
+Write-Log 'SnipBatch ready.'
+Write-Log '1) Source folder  2) Output folder  3) Region  4) Process.'
+Write-Log 'In the selection: drag, adjust with the handles and press ENTER to confirm.'
 
 Update-OutBox
 Update-FormatState

@@ -1,30 +1,31 @@
-# Ejecuta las tres suites y resume. Ninguna abre dialogos ni toca raton/teclado.
+# Runs the three suites and sums up. None of them open dialogs or take over
+# the mouse or keyboard.
 $ErrorActionPreference = 'Continue'
-$env:SNIPBATCH_NODIALOG = '1'   # sin este flag un error de arranque abriria un modal
+$env:SNIPBATCH_NODIALOG = '1'   # without this flag a startup error would open a modal
 
 $suites = @(
-    @{ Nombre = 'Geometria de la seleccion'; Archivo = 'Test-Geometry.ps1'   },
-    @{ Nombre = 'Recorte y transparencia';   Archivo = 'Test-Processing.ps1' },
-    @{ Nombre = 'Ventana principal';         Archivo = 'Test-Window.ps1'     }
+    @{ Name = 'Selection geometry';       File = 'Test-Geometry.ps1'   },
+    @{ Name = 'Cropping and transparency'; File = 'Test-Processing.ps1' },
+    @{ Name = 'Main window';              File = 'Test-Window.ps1'     }
 )
 
-$fallidas = 0
+$failed = 0
 foreach ($s in $suites) {
     Write-Host ''
-    Write-Host "=== $($s.Nombre) ===" -ForegroundColor Cyan
-    $ruta = Join-Path $PSScriptRoot $s.Archivo
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File $ruta 2>&1 |
+    Write-Host "=== $($s.Name) ===" -ForegroundColor Cyan
+    $path = Join-Path $PSScriptRoot $s.File
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File $path 2>&1 |
         ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
-        $fallidas++
-        Write-Host "  --> FALLA" -ForegroundColor Red
+        $failed++
+        Write-Host "  --> FAILED" -ForegroundColor Red
     }
 }
 
 Write-Host ''
-if ($fallidas -eq 0) {
-    Write-Host 'TODAS LAS SUITES PASAN' -ForegroundColor Green
+if ($failed -eq 0) {
+    Write-Host 'ALL SUITES PASS' -ForegroundColor Green
     exit 0
 }
-Write-Host "$fallidas suite(s) con fallos" -ForegroundColor Red
+Write-Host "$failed suite(s) with failures" -ForegroundColor Red
 exit 1

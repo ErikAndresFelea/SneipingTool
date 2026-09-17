@@ -1,7 +1,7 @@
-# Prueba la ventana principal SIN abrir dialogos ni tocar raton/teclado:
-# sustituye el ShowDialog final por asserts sobre el estado de los controles.
+# Exercises the main window WITHOUT opening dialogs or touching mouse/keyboard:
+# it swaps the final ShowDialog for asserts on the state of the controls.
 $ErrorActionPreference = 'Stop'
-# Ruta al script bajo prueba, relativa a esta carpeta.
+# Path to the script under test, relative to this folder.
 $src = [System.IO.Path]::Combine((Split-Path $PSScriptRoot -Parent), 'SnipBatch.ps1')
 $text = Get-Content $src -Raw
 
@@ -9,7 +9,7 @@ $driver = @'
 $script:pass = 0; $script:fail = 0
 function Chk($actual, $expected, $name) {
     if ("$actual" -eq "$expected") { $script:pass++ }
-    else { $script:fail++; "  FALLO  $name : esperado <$expected>  obtenido <$actual>" }
+    else { $script:fail++; "  FAIL  $name : expected <$expected>  got <$actual>" }
 }
 
 $base  = $env:TEMP
@@ -25,84 +25,84 @@ $bmp.Save((Join-Path $conim 'dos.png'), [System.Drawing.Imaging.ImageFormat]::Pn
 $bmp.Dispose()
 [void](New-Item -ItemType File -Path (Join-Path $vacia 'notas.txt'))
 
-Chk $main.Controls.Count 15 'la ventana monta todos los controles'
+Chk $main.Controls.Count 15 'the window builds every control'
 
-# --- carpeta con imagenes ---
+# --- folder with images ---
 Set-SourceFolder -Path $conim
-Chk $btnRegion.Enabled $true  'con imagenes se habilita Seleccionar region'
-Chk $btnRun.Enabled    $false 'sin region, Procesar sigue bloqueado'
-Chk $lblCount.Text '2 imagen(es) encontradas. Referencia: dos.png' 'cuenta y referencia (orden alfabetico)'
-Chk $txtOut.Text (Join-Path $conim 'recortadas') 'salida por defecto dentro del origen'
+Chk $btnRegion.Enabled $true  'with images, Select region is enabled'
+Chk $btnRun.Enabled    $false 'with no region, Process stays disabled'
+Chk $lblCount.Text '2 image(s) found. Reference: dos.png' 'count and reference (alphabetical)'
+Chk $txtOut.Text (Join-Path $conim 'crops') 'default output inside the source'
 
-# --- carpeta SIN imagenes (esto reventaba con StrictMode) ---
+# --- folder WITHOUT images (this used to crash under StrictMode) ---
 Set-SourceFolder -Path $vacia
-Chk $lblCount.Text 'No hay imagenes compatibles en esa carpeta.' 'avisa de carpeta sin imagenes'
-Chk $btnRegion.Enabled $false 'sin imagenes no deja seleccionar region'
-Chk $btnRun.Enabled    $false 'sin imagenes no deja procesar'
+Chk $lblCount.Text 'No supported images in that folder.' 'reports a folder with no images'
+Chk $btnRegion.Enabled $false 'no images means no region selection'
+Chk $btnRun.Enabled    $false 'no images means no processing'
 
-# --- carpeta inexistente ---
+# --- missing folder ---
 Set-SourceFolder -Path 'Z:\no\existe\nada'
-Chk $btnRegion.Enabled $false 'ruta inexistente tratada como vacia'
+Chk $btnRegion.Enabled $false 'missing path treated as empty'
 
-# --- salida manual y vuelta a la predeterminada ---
+# --- manual output folder and back to the default ---
 Set-SourceFolder -Path $conim
 $ui.OutFolder = 'D:\otra\parte'
 Update-OutBox
-Chk $txtOut.Text 'D:\otra\parte' 'salida manual se respeta'
-Chk ($lblOutHint.Text -like 'Carpeta de salida fija*') $true 'la pista cambia con salida fija'
+Chk $txtOut.Text 'D:\otra\parte' 'manual output is honoured'
+Chk ($lblOutHint.Text -like 'Fixed output folder*') $true 'the hint changes for a fixed output'
 $ui.OutFolder = ''
 Update-OutBox
-Chk $txtOut.Text (Join-Path $conim 'recortadas') 'Predeterminada restaura la subcarpeta'
+Chk $txtOut.Text (Join-Path $conim 'crops') 'Default restores the subfolder'
 
-# --- cambiar de carpeta invalida la region anterior ---
+# --- changing folder invalidates the previous region ---
 $ui.Region = New-Object System.Drawing.Rectangle(0, 0, 10, 10)
 $ui.RefWidth = 300; $ui.RefHeight = 200
 Update-RunState
-Chk $btnRun.Enabled $true 'con region + imagenes, Procesar se habilita'
+Chk $btnRun.Enabled $true 'with region + images, Process is enabled'
 Set-SourceFolder -Path $conim
-Chk ($null -eq $ui.Region) $true 'al cambiar de carpeta se descarta la region'
-Chk $btnRun.Enabled $false 'y Procesar vuelve a bloquearse'
+Chk ($null -eq $ui.Region) $true 'changing folder discards the region'
+Chk $btnRun.Enabled $false 'and Process is disabled again'
 
-# --- formato de salida y su efecto sobre la transparencia ---
-Chk $cmbFormat.SelectedItem 'PNG'  'arranca en PNG'
-Chk $chkAlpha.Enabled $true        'con PNG la casilla de alfa esta disponible'
-Chk $chkAlpha.Checked $false       'y viene desmarcada'
-Chk $numTol.Enabled   $false       'la tolerancia empieza bloqueada'
+# --- output format and its effect on transparency ---
+Chk $cmbFormat.SelectedItem 'PNG'  'starts on PNG'
+Chk $chkAlpha.Enabled $true        'with PNG the alpha checkbox is available'
+Chk $chkAlpha.Checked $false       'and starts unticked'
+Chk $numTol.Enabled   $false       'tolerance starts disabled'
 
 $chkAlpha.Checked = $true
-Chk $numTol.Enabled $true          'marcar alfa desbloquea la tolerancia'
-Chk $ui.WantAlpha   $true          'se recuerda la eleccion'
+Chk $numTol.Enabled $true          'ticking alpha enables tolerance'
+Chk $ui.WantAlpha   $true          'the choice is remembered'
 
 $cmbFormat.SelectedItem = 'JPG'
-Chk $chkAlpha.Enabled $false       'JPG deshabilita la casilla de alfa'
-Chk $chkAlpha.Checked $false       'y la desmarca'
-Chk $numTol.Enabled   $false       'y bloquea la tolerancia'
-Chk $ui.WantAlpha     $true        'pero NO olvida lo que el usuario queria'
-Chk ($lblFmtHint.Text -like 'JPG no admite transparencia*') $true 'y lo explica'
+Chk $chkAlpha.Enabled $false       'JPG disables the alpha checkbox'
+Chk $chkAlpha.Checked $false       'and unticks it'
+Chk $numTol.Enabled   $false       'and disables tolerance'
+Chk $ui.WantAlpha     $true        'but does NOT forget what the user wanted'
+Chk ($lblFmtHint.Text -like 'JPG has no alpha channel*') $true 'and explains it'
 
 $cmbFormat.SelectedItem = 'BMP'
-Chk $chkAlpha.Enabled $false       'BMP tampoco admite alfa'
+Chk $chkAlpha.Enabled $false       'BMP has no alpha either'
 
 $cmbFormat.SelectedItem = 'PNG'
-Chk $chkAlpha.Enabled $true        'al volver a PNG se rehabilita'
-Chk $chkAlpha.Checked $true        'y se restaura la marca original'
-Chk $numTol.Enabled   $true        'con su tolerancia'
+Chk $chkAlpha.Enabled $true        'going back to PNG re-enables it'
+Chk $chkAlpha.Checked $true        'and restores the original tick'
+Chk $numTol.Enabled   $true        'along with its tolerance'
 $chkAlpha.Checked = $false
 
-# --- cierre durante el proceso ---
-# FormClosing solo se dispara si la ventana llego a mostrarse
+# --- closing mid-run ---
+# FormClosing only fires if the window was actually shown
 $main.Show()
 [System.Windows.Forms.Application]::DoEvents()
 $ui.Busy = $true
 $main.Close()
 [System.Windows.Forms.Application]::DoEvents()
-Chk $main.IsDisposed $false 'estando ocupado, cerrar no destruye la ventana'
-Chk $ui.Stop $true          'cerrar pide parar el lote'
+Chk $main.IsDisposed $false 'while busy, closing does not dispose the window'
+Chk $ui.Stop $true          'closing asks the batch to stop'
 $ui.Busy = $false; $ui.Stop = $false
 
 Remove-Item $vacia, $conim -Recurse -Force
 ''
-"RESULTADO VENTANA: $script:pass OK, $script:fail fallos"
+"WINDOW RESULT: $script:pass passed, $script:fail failed"
 $main.Dispose()
 if ($script:fail -gt 0) { exit 1 }
 '@
