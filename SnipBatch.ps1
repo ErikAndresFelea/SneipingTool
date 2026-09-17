@@ -35,6 +35,7 @@ Add-Type -ReferencedAssemblies System.Drawing, System.Windows.Forms -TypeDefinit
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -74,6 +75,123 @@ public static class SnipBatchNative
             return hits;
         }
         finally { bmp.UnlockBits(data); }
+    }
+}
+
+// Explorer-style folder picker. FolderBrowserDialog is the old tree: no address
+// bar, no typing or pasting a path, no Quick access, and it always starts the
+// walk from the top. This is the very dialog Explorer uses (IFileDialog with
+// FOS_PICKFOLDERS), shipped with Windows since Vista, so nothing to install.
+// SetFolder reopens it where the caller was, and the client GUID makes Windows
+// remember that place between runs of the tool.
+public static class SnipBatchFolder
+{
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    private class FileOpenDialogRCW { }
+
+    // Only the methods actually called carry a real signature; the rest are
+    // placeholders that keep the vtable slots in order.
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes();
+        void SetFileTypeIndex();
+        void GetFileTypeIndex();
+        void Advise();
+        void Unadvise();
+        void SetOptions(uint options);
+        void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem item);
+        void SetFolder(IShellItem item);
+        void GetFolder(out IShellItem item);
+        void GetCurrentSelection(out IShellItem item);
+        void SetFileName();
+        void GetFileName();
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel();
+        void SetFileNameLabel();
+        void GetResult(out IShellItem item);
+        void AddPlace();
+        void SetDefaultExtension();
+        void Close();
+        void SetClientGuid(ref Guid guid);
+    }
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler();
+        void GetParent();
+        void GetDisplayName(uint sigdn, out IntPtr name);
+        void GetAttributes();
+        void Compare();
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr bindCtx,
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+
+    private const uint FOS_PICKFOLDERS     = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;   // no libraries or virtual folders
+    private const uint FOS_PATHMUSTEXIST   = 0x00000800;
+    private const uint FOS_NOCHANGEDIR     = 0x00000008;   // keep the process CWD
+    private const uint SIGDN_FILESYSPATH   = 0x80058000;
+
+    // Returns the chosen path, or null when the user cancels.
+    public static string Pick(IntPtr owner, string title, string startAt, string clientGuid)
+    {
+        IFileDialog dlg = (IFileDialog)new FileOpenDialogRCW();
+        try
+        {
+            uint options;
+            dlg.GetOptions(out options);
+            dlg.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
+                                   | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+
+            if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
+            if (!string.IsNullOrEmpty(clientGuid))
+            {
+                Guid g = new Guid(clientGuid);
+                dlg.SetClientGuid(ref g);
+            }
+
+            bool exists = false;
+            try { exists = !string.IsNullOrEmpty(startAt) && Directory.Exists(startAt); }
+            catch { }   // dropped drive: just open wherever Windows remembers
+            if (exists)
+            {
+                IShellItem start = null;
+                try
+                {
+                    SHCreateItemFromParsingName(startAt, IntPtr.Zero, typeof(IShellItem).GUID, out start);
+                    if (start != null) dlg.SetFolder(start);
+                }
+                catch { }
+                finally { if (start != null) Marshal.ReleaseComObject(start); }
+            }
+
+            if (dlg.Show(owner) != 0) return null;   // 0x800704C7 = cancelled
+
+            IShellItem result;
+            dlg.GetResult(out result);
+            IntPtr buf = IntPtr.Zero;
+            try
+            {
+                result.GetDisplayName(SIGDN_FILESYSPATH, out buf);
+                return Marshal.PtrToStringUni(buf);
+            }
+            finally
+            {
+                if (buf != IntPtr.Zero) Marshal.FreeCoTaskMem(buf);
+                Marshal.ReleaseComObject(result);
+            }
+        }
+        finally { Marshal.ReleaseComObject(dlg); }
     }
 }
 
@@ -661,6 +779,7 @@ $ui = [pscustomobject]@{
     Busy      = $false
     Stop      = $false
     WantAlpha = $false   # what the user ticked, to restore when going back to PNG
+    LastDir   = ''       # last folder browsed to, so the next dialog starts there
 }
 
 # The output folder is explicit: a subfolder of the source by default, but it
@@ -881,21 +1000,54 @@ function Set-SourceFolder {
     Update-RunState
 }
 
+# Opens the Explorer-style picker starting at the first of the candidate paths
+# that still exists, so changing a folder never starts the walk from scratch.
+# The GUID identifies the dialog for Windows, which stores its last position
+# under it: source and output keep separate memories, kept between runs.
+# If the COM dialog is ever unavailable it falls back to the old tree rather
+# than leaving the button dead.
+function Select-FolderDialog {
+    param([string]$Title, [string[]]$StartAt, [string]$ClientGuid)
+
+    $start = ''
+    foreach ($p in $StartAt) {
+        if (Test-FolderExists $p) { $start = $p; break }
+    }
+
+    $owner = [IntPtr]::Zero
+    if ($main.IsHandleCreated) { $owner = $main.Handle }
+
+    try {
+        $picked = [SnipBatchFolder]::Pick($owner, $Title, $start, $ClientGuid)
+    }
+    catch {
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description         = $Title
+        $dlg.ShowNewFolderButton = $true
+        if ($start -ne '') { $dlg.SelectedPath = $start }
+        $picked = $null
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $picked = $dlg.SelectedPath }
+        $dlg.Dispose()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($picked)) { $ui.LastDir = $picked }
+    return $picked
+}
+
 $btnFolder.Add_Click({
-    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'Folder holding the screenshots'
-    if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
-    Set-SourceFolder -Path $dlg.SelectedPath
+    $picked = Select-FolderDialog -Title 'Folder holding the screenshots' `
+                                  -StartAt @($ui.Folder, $ui.LastDir) `
+                                  -ClientGuid '7b2f1a4e-6c3d-4b57-9a11-5d0c2e8f3a01'
+    if ([string]::IsNullOrWhiteSpace($picked)) { return }
+    Set-SourceFolder -Path $picked
 })
 
 $btnOut.Add_Click({
-    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'Folder to save the crops in'
-    $dlg.ShowNewFolderButton = $true
-    $current = Resolve-OutFolder
-    if (Test-FolderExists $current) { $dlg.SelectedPath = $current }
-    if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
-    $ui.OutFolder = $dlg.SelectedPath
+    $picked = Select-FolderDialog -Title 'Folder to save the crops in' `
+                                  -StartAt @((Resolve-OutFolder), $ui.Folder, $ui.LastDir) `
+                                  -ClientGuid '7b2f1a4e-6c3d-4b57-9a11-5d0c2e8f3a02'
+    if ([string]::IsNullOrWhiteSpace($picked)) { return }
+    $ui.OutFolder = $picked
     Update-OutBox
 })
 

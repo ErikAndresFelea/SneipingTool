@@ -15,6 +15,11 @@ Double-click **`SnipBatch.bat`**.
 3. **Select region** → the first image opens full screen.
 4. **Process all**.
 
+Both *Browse* buttons open the same folder window Explorer uses, with its address bar, Quick
+access and search, so a path can also be typed or pasted. Each one reopens where you left it —
+changing a folder never means walking the tree from the top again — and it is remembered between
+runs of the tool.
+
 ## The selection
 
 Drag to draw the rectangle. **Releasing the mouse does not confirm it**: the selection stays live
