@@ -11,6 +11,7 @@ function Chk($actual, $expected, $name) {
     if ("$actual" -eq "$expected") { $script:pass++ }
     else { $script:fail++; "  FAIL  $name : expected <$expected>  got <$actual>" }
 }
+function Fmt($r) { "$($r.X),$($r.Y),$($r.Width),$($r.Height)" }
 
 $base  = $env:TEMP
 $vacia = Join-Path $base 'sb_vacia'
@@ -25,7 +26,7 @@ $bmp.Save((Join-Path $conim 'dos.png'), [System.Drawing.Imaging.ImageFormat]::Pn
 $bmp.Dispose()
 [void](New-Item -ItemType File -Path (Join-Path $vacia 'notas.txt'))
 
-Chk $main.Controls.Count 15 'the window builds every control'
+Chk $main.Controls.Count 16 'the window builds every control'
 
 # --- folder with images ---
 Set-SourceFolder -Path $conim
@@ -62,6 +63,38 @@ Chk $btnRun.Enabled $true 'with region + images, Process is enabled'
 Set-SourceFolder -Path $conim
 Chk ($null -eq $ui.Region) $true 'changing folder discards the region'
 Chk $btnRun.Enabled $false 'and Process is disabled again'
+
+# --- reusing the last region ---
+# It starts empty because the tests redirect the file away from the profile.
+Chk $btnReuse.Enabled $false 'with nothing remembered, Reuse is disabled'
+
+$ui.LastRegion = New-Object System.Drawing.Rectangle(30, 40, 120, 90)
+$ui.LastRefW = 300; $ui.LastRefH = 200
+Update-ReuseState
+Chk $btnReuse.Enabled $true 'with a remembered region, Reuse is offered'
+
+Use-LastRegion
+Chk (Fmt $ui.Region) '30,40,120,90' 'Reuse puts the region back'
+Chk "$($ui.RefWidth)x$($ui.RefHeight)" '300x200' 'along with its reference size'
+Chk $btnRun.Enabled $true 'and Process is enabled without opening the selection'
+Chk ($lblRegion.Text -like 'Region: 120 x 90 px*') $true 'and the label shows it'
+Chk $btnReuse.Enabled $false 'reusing twice in a row makes no sense'
+
+Set-SourceFolder -Path $conim
+Chk ($null -eq $ui.Region) $true 'changing folder discards the region again'
+Chk $btnReuse.Enabled $true 'but the remembered one is still one click away'
+
+# A folder with no images has nothing to apply it to
+Set-SourceFolder -Path $vacia
+Chk $btnReuse.Enabled $false 'with no images, Reuse is disabled'
+Set-SourceFolder -Path $conim
+
+# What is saved on disk survives and comes back
+[void](Save-LastRegion -Rect $ui.LastRegion -RefWidth 300 -RefHeight 200 -Path (Get-LastRegionPath))
+$reloaded = Read-LastRegion -Path (Get-LastRegionPath)
+Chk (Fmt $reloaded.Rect) '30,40,120,90' 'the region is written where the next run will look'
+$ui.Region = $null
+Update-RunState; Update-ReuseState
 
 # --- output format and its effect on transparency ---
 Chk $cmbFormat.SelectedItem 'PNG'  'starts on PNG'
@@ -101,6 +134,7 @@ Chk $ui.Stop $true          'closing asks the batch to stop'
 $ui.Busy = $false; $ui.Stop = $false
 
 Remove-Item $vacia, $conim -Recurse -Force
+if (Test-Path (Get-LastRegionPath)) { Remove-Item (Get-LastRegionPath) -Force }
 ''
 "WINDOW RESULT: $script:pass passed, $script:fail failed"
 $main.Dispose()
@@ -110,4 +144,11 @@ if ($script:fail -gt 0) { exit 1 }
 $text = $text.Replace('[void]$main.ShowDialog()' + "`n" + '$main.Dispose()', $driver)
 $tmp  = Join-Path $env:TEMP 'snipbatch_win.ps1'
 Set-Content -Path $tmp -Value $text -Encoding UTF8
-& $tmp
+
+# The remembered region goes to a scratch file, never to the real profile: the
+# window must start with nothing remembered whatever the machine has lying around.
+$regionFile = Join-Path $env:TEMP 'sb_win_lastregion.txt'
+if (Test-Path $regionFile) { Remove-Item $regionFile -Force }
+$env:SNIPBATCH_REGION_FILE = $regionFile
+try     { & $tmp }
+finally { $env:SNIPBATCH_REGION_FILE = '' }

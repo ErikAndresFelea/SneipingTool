@@ -12,7 +12,8 @@ Double-click **`SnipBatch.bat`**.
 2. **Folder to save the crops in** → defaults to a `crops` subfolder inside the source;
    *Browse* points it anywhere you like and *Default* restores the default. Originals are never
    modified.
-3. **Select region** → the first image opens full screen.
+3. **Select region** → the first image opens full screen. Or **Reuse last region**, which puts
+   back the last region you used, with no full-screen step.
 4. **Process all**.
 
 Both *Browse* buttons open the same folder window Explorer uses, with its address bar, Quick
@@ -73,6 +74,14 @@ selection: it is stored in image pixels, so it survives zoom, pan and the whole 
   keeps coordinates exact to the pixel and lets you see what you are about to crop.
 - **Images of different sizes:** if an image does not match the reference size, the region is
   scaled proportionally and the log says so. If it still falls outside, that image is skipped.
+- **The last region is remembered.** Changing the source folder still clears the region — the old
+  coordinates mean nothing on screenshots you have not seen — but it is not forgotten: *Reuse
+  last region* puts it straight back, and it survives closing the tool, so the same crop is one
+  click away tomorrow. Hovering the button shows what it will apply and the image size it was
+  drawn on. The size travels with it, so on screenshots of another size the region is rescaled
+  just as if it had been drawn there, and the log points that out. It lives in
+  `%LOCALAPPDATA%\SnipBatch\last-region.txt`; setting `SNIPBATCH_REGION_FILE` moves it elsewhere,
+  which is what a copy on a USB stick wants.
 - **Name collisions:** if the folder holds both `photo.png` and `photo.jpg`, the second crop is
   saved as `photo (2).png` instead of overwriting the first.
 - **Tolerance:** a pixel becomes transparent when its R, G and B channels are *all* below the
@@ -95,14 +104,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -STA -File .\SnipBatch.ps1
 |---|---|
 | `SnipBatch.bat` | Launcher. This is the one you run. |
 | `SnipBatch.ps1` | The whole tool: interface, selection and processing. |
-| `tests/run-tests.bat` | Runs the 132 automated tests. |
+| `tests/run-tests.bat` | Runs the 157 automated tests. |
 
 ## Tests
 
 Double-click `tests/run-tests.bat`. They cover the selection geometry (clamping at edges, handles
 dragged past the opposite side, screen↔image conversion, zoom and pan clamping), cropping, output
 formats and transparency (tolerance, flattening onto white, JPEG quality, mismatched sizes, name
-collisions, files left unlocked) and the main window (empty folder, missing drive, manual output
-folder, format versus transparency, closing mid-run).
+collisions, files left unlocked, the remembered region surviving a corrupt file) and the main window (empty folder, missing drive, manual output folder,
+format versus transparency, reusing the remembered region, closing mid-run).
 
 None of them open dialogs or take over the mouse or keyboard, so they can be left running.

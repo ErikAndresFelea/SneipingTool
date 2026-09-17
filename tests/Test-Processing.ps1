@@ -160,6 +160,44 @@ $r = Invoke-Crop -Path (Join-Path $dir 'a.png') -Region $region -RefWidth 0 -Ref
 Chk $r.Ok 'False' 'no reference returns a controlled failure'
 Chk $r.Message 'no reference image' 'and says so'
 
+# --- Remembering the last region ---
+$rgnFile = Join-Path $env:TEMP 'sb_lastregion.txt'
+if (Test-Path $rgnFile) { Remove-Item $rgnFile -Force }
+
+Chk (Read-LastRegion -Path $rgnFile) '' 'no file means nothing remembered'
+
+$keep = New-Object System.Drawing.Rectangle(40, 60, 200, 150)
+Chk (Save-LastRegion -Rect $keep -RefWidth 1920 -RefHeight 1080 -Path $rgnFile) 'True' 'the region is saved'
+$back = Read-LastRegion -Path $rgnFile
+Chk "$($back.Rect.X),$($back.Rect.Y),$($back.Rect.Width),$($back.Rect.Height)" '40,60,200,150' 'and comes back identical'
+Chk "$($back.RefWidth)x$($back.RefHeight)" '1920x1080' 'along with the reference size'
+
+# An empty region is never worth remembering
+$empty = New-Object System.Drawing.Rectangle(10, 10, 0, 0)
+Chk (Save-LastRegion -Rect $empty -RefWidth 800 -RefHeight 600 -Path $rgnFile) 'False' 'an empty region is not saved'
+Chk (Read-LastRegion -Path $rgnFile).Rect.Width 200 'and does not overwrite the good one'
+
+# A hand-edited or truncated file must not crash the tool on startup
+Set-Content -Path $rgnFile -Value 'esto no es una region' -Encoding UTF8
+Chk (Read-LastRegion -Path $rgnFile) '' 'rubbish in the file is ignored'
+Set-Content -Path $rgnFile -Value '10,20,30' -Encoding UTF8
+Chk (Read-LastRegion -Path $rgnFile) '' 'a truncated line is ignored'
+Set-Content -Path $rgnFile -Value '10,20,99999999999,40,800,600' -Encoding UTF8
+Chk (Read-LastRegion -Path $rgnFile) '' 'a number too big for an int is ignored'
+Set-Content -Path $rgnFile -Value '10,20,0,0,800,600' -Encoding UTF8
+Chk (Read-LastRegion -Path $rgnFile) '' 'a zero-sized region is ignored'
+
+# A missing drive must not throw either
+Chk (Read-LastRegion -Path 'Z:\no\existe\region.txt') '' 'a missing drive is ignored'
+Chk (Save-LastRegion -Rect $keep -RefWidth 800 -RefHeight 600 -Path 'Z:\no\existe\region.txt') 'False' 'and saving there fails quietly'
+
+# The environment variable wins over the profile
+$env:SNIPBATCH_REGION_FILE = $rgnFile
+Chk (Get-LastRegionPath) $rgnFile 'SNIPBATCH_REGION_FILE redirects the file'
+$env:SNIPBATCH_REGION_FILE = ''
+Chk ((Get-LastRegionPath) -like '*\SnipBatch\last-region.txt') $true 'and without it, the profile is used'
+Remove-Item $rgnFile -Force
+
 # originals are not left locked
 try { Remove-Item (Join-Path $dir 'a.png') -Force; $script:pass++ }
 catch { $script:fail++; "  FAIL  source file locked: $_" }

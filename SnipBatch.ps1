@@ -436,6 +436,64 @@ function ConvertTo-ImagePoint {
         [Math]::Max(0, [Math]::Min($y, $MaxH)))
 }
 
+# --- Remembering the last region -------------------------------------------
+# The region is kept in a small text file under LOCALAPPDATA so it outlives the
+# tool being closed: same screenshots tomorrow, same crop, one click. The
+# reference size travels with it, which is what lets Invoke-Crop rescale the
+# region when the new folder holds screenshots of another size.
+# Everything here is best effort: a locked or unwritable profile must never
+# cost the user a crop, so failures are swallowed and the button simply stays
+# out of the way.
+function Get-LastRegionPath {
+    # SNIPBATCH_REGION_FILE redirects the file: it keeps the tests away from the
+    # real profile, and lets a copy on a USB stick keep its own memory.
+    if (-not [string]::IsNullOrWhiteSpace($env:SNIPBATCH_REGION_FILE)) {
+        return $env:SNIPBATCH_REGION_FILE
+    }
+    $dir = [System.IO.Path]::Combine(
+                [Environment]::GetFolderPath('LocalApplicationData'), 'SnipBatch')
+    return [System.IO.Path]::Combine($dir, 'last-region.txt')
+}
+
+function Save-LastRegion {
+    param(
+        [System.Drawing.Rectangle]$Rect,
+        [int]$RefWidth, [int]$RefHeight, [string]$Path
+    )
+    if ($Rect.Width -lt 1 -or $Rect.Height -lt 1) { return $false }
+    try {
+        $dir = [System.IO.Path]::GetDirectoryName($Path)
+        if (-not (Test-FolderExists $dir)) { [void][System.IO.Directory]::CreateDirectory($dir) }
+        [System.IO.File]::WriteAllText($Path,
+            ('{0},{1},{2},{3},{4},{5}' -f $Rect.X, $Rect.Y, $Rect.Width, $Rect.Height,
+                                          $RefWidth, $RefHeight))
+        return $true
+    }
+    catch { return $false }
+}
+
+# Returns $null when there is nothing usable: no file, a truncated line, a
+# hand-edited one, numbers too big for an int...
+function Read-LastRegion {
+    param([string]$Path)
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return $null }
+        $raw = ([System.IO.File]::ReadAllText($Path)).Trim()
+        $m = [regex]::Match($raw, '^(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)$')
+        if (-not $m.Success) { return $null }
+        $rect = New-Object System.Drawing.Rectangle(
+                    [int]$m.Groups[1].Value, [int]$m.Groups[2].Value,
+                    [int]$m.Groups[3].Value, [int]$m.Groups[4].Value)
+        if ($rect.Width -lt 1 -or $rect.Height -lt 1) { return $null }
+        return [pscustomobject]@{
+            Rect      = $rect
+            RefWidth  = [int]$m.Groups[5].Value
+            RefHeight = [int]$m.Groups[6].Value
+        }
+    }
+    catch { return $null }
+}
+
 # --- Output format ---------------------------------------------------------
 # Only PNG has a real alpha channel. BMP allows 32-bit with alpha but almost no
 # viewer honours it, and JPEG has none at all, so both are flattened onto white
@@ -1051,6 +1109,9 @@ $ui = [pscustomobject]@{
     Stop      = $false
     WantAlpha = $false   # what the user ticked, to restore when going back to PNG
     LastDir   = ''       # last folder browsed to, so the next dialog starts there
+    LastRegion = $null   # last region confirmed, offered again with one click
+    LastRefW   = 0       # size of the image it was drawn on, needed to rescale it
+    LastRefH   = 0
 }
 
 # The output folder is explicit: a subfolder of the source by default, but it
@@ -1125,9 +1186,19 @@ $btnRegion.Location = New-Object System.Drawing.Point(14, 166)
 $btnRegion.Size     = New-Object System.Drawing.Size(180, 32)
 $btnRegion.Enabled  = $false
 
+$btnReuse = New-Object System.Windows.Forms.Button
+$btnReuse.Text     = 'Reuse last region'
+$btnReuse.Location = New-Object System.Drawing.Point(200, 166)
+$btnReuse.Size     = New-Object System.Drawing.Size(150, 32)
+$btnReuse.Enabled  = $false
+
+$tipReuse = New-Object System.Windows.Forms.ToolTip
+$tipReuse.AutoPopDelay = 8000
+
 $lblRegion = New-Object System.Windows.Forms.Label
-$lblRegion.Location  = New-Object System.Drawing.Point(204, 174)
-$lblRegion.Size      = New-Object System.Drawing.Size(386, 20)
+$lblRegion.Location  = New-Object System.Drawing.Point(358, 166)
+$lblRegion.Size      = New-Object System.Drawing.Size(232, 34)
+$lblRegion.TextAlign = 'MiddleLeft'
 $lblRegion.ForeColor = [System.Drawing.Color]::DimGray
 $lblRegion.Text      = 'No region defined.'
 
@@ -1200,7 +1271,7 @@ $log.Font       = New-Object System.Drawing.Font('Consolas', 8.5)
 
 $main.Controls.AddRange(@($lblFolder, $txtFolder, $btnFolder, $lblCount,
                           $lblOut, $txtOut, $btnOut, $btnOutReset, $lblOutHint,
-                          $btnRegion, $lblRegion, $grp, $btnRun, $progress, $log))
+                          $btnRegion, $btnReuse, $lblRegion, $grp, $btnRun, $progress, $log))
 
 function Write-Log {
     param([string]$Text)
@@ -1219,6 +1290,24 @@ function Update-OutBox {
 
 function Update-RunState {
     $btnRun.Enabled = ($null -ne $ui.Region) -and ((Get-ImageFiles $ui.Folder).Count -gt 0)
+}
+
+# Offers the remembered region again. It stays available while it is not the
+# one already in use: re-applying the current region would do nothing.
+function Update-ReuseState {
+    $has = $null -ne $ui.LastRegion
+    $btnReuse.Enabled = $has -and
+                        ((Get-ImageFiles $ui.Folder).Count -gt 0) -and
+                        ($null -eq $ui.Region)
+    if ($has) {
+        $r = $ui.LastRegion
+        $tipReuse.SetToolTip($btnReuse,
+            ("Last region used: {0} x {1} px at X={2}, Y={3}`r`ndrawn on a {4} x {5} image." -f
+                $r.Width, $r.Height, $r.X, $r.Y, $ui.LastRefW, $ui.LastRefH))
+    }
+    else {
+        $tipReuse.SetToolTip($btnReuse, 'No region has been used yet.')
+    }
 }
 
 # JPG and BMP carry no alpha: rather than losing transparency silently, the
@@ -1252,7 +1341,9 @@ function Set-SourceFolder {
 
     $ui.Folder      = $Path
     $txtFolder.Text = $Path
-    $ui.Region      = $null      # the old region is meaningless for other screenshots
+    # The old region is dropped rather than applied blindly to other
+    # screenshots, but it is not forgotten: "Reuse last region" brings it back.
+    $ui.Region      = $null
     $ui.RefWidth    = 0
     $ui.RefHeight   = 0
     $lblRegion.Text = 'No region defined.'
@@ -1269,6 +1360,7 @@ function Set-SourceFolder {
     }
     Update-OutBox
     Update-RunState
+    Update-ReuseState
 }
 
 # Opens the Explorer-style picker starting at the first of the candidate paths
@@ -1355,8 +1447,54 @@ $btnRegion.Add_Click({
     $lblRegion.Text = "Region: $($region.Width) x $($region.Height) px  at  X=$($region.X), Y=$($region.Y)"
     $lblRegion.ForeColor = [System.Drawing.Color]::Black
     Write-Log "Region defined on $($files[0].Name) ($($ui.RefWidth)x$($ui.RefHeight)): $($region.Width)x$($region.Height) @ $($region.X),$($region.Y)"
+
+    $ui.LastRegion = $region
+    $ui.LastRefW   = $ui.RefWidth
+    $ui.LastRefH   = $ui.RefHeight
+    [void](Save-LastRegion -Rect $region -RefWidth $ui.RefWidth -RefHeight $ui.RefHeight `
+                           -Path (Get-LastRegionPath))
+
     Update-RunState
+    Update-ReuseState
 })
+
+# Puts the remembered region back without opening the full-screen selection.
+# The reference size comes back with it, so a folder of screenshots in another
+# size gets the region rescaled exactly as if it had just been drawn.
+# Split out of the handler, like Set-SourceFolder, so the tests can exercise it.
+function Use-LastRegion {
+    if ($null -eq $ui.LastRegion) { return }
+    $files = Get-ImageFiles $ui.Folder
+    if ($files.Count -eq 0) { return }
+
+    $region       = $ui.LastRegion
+    $ui.Region    = $region
+    $ui.RefWidth  = $ui.LastRefW
+    $ui.RefHeight = $ui.LastRefH
+
+    $lblRegion.Text = "Region: $($region.Width) x $($region.Height) px  at  X=$($region.X), Y=$($region.Y)"
+    $lblRegion.ForeColor = [System.Drawing.Color]::Black
+    Write-Log "Region reused: $($region.Width)x$($region.Height) @ $($region.X),$($region.Y) (drawn on $($ui.LastRefW)x$($ui.LastRefH))"
+
+    # Says up front whether these screenshots are the same size, because on a
+    # different one the crop is rescaled and will not be pixel for pixel.
+    try {
+        $probe = Open-ImageNoLock -Path $files[0].FullName
+        try {
+            if ($probe.Image.Width -ne $ui.LastRefW -or $probe.Image.Height -ne $ui.LastRefH) {
+                Write-Log ("  note: $($files[0].Name) is $($probe.Image.Width)x$($probe.Image.Height), " +
+                           'so the region will be rescaled. Select it again for an exact crop.')
+            }
+        }
+        finally { $probe.Image.Dispose(); $probe.Stream.Dispose() }
+    }
+    catch { }   # unreadable reference: processing will report it per image
+
+    Update-RunState
+    Update-ReuseState
+}
+
+$btnReuse.Add_Click({ Use-LastRegion })
 
 $btnRun.Add_Click({
     $files = Get-ImageFiles $ui.Folder
@@ -1393,7 +1531,7 @@ $btnRun.Add_Click({
         return
     }
 
-    $btnRun.Enabled = $false; $btnRegion.Enabled = $false
+    $btnRun.Enabled = $false; $btnRegion.Enabled = $false; $btnReuse.Enabled = $false
     $btnFolder.Enabled = $false; $btnOut.Enabled = $false; $btnOutReset.Enabled = $false
     $progress.Value   = 0
     $progress.Maximum = $files.Count
@@ -1432,6 +1570,7 @@ $btnRun.Add_Click({
     Write-Log "--- Done: $ok succeeded, $fail with problems."
     $btnRun.Enabled = $true; $btnRegion.Enabled = $true
     $btnFolder.Enabled = $true; $btnOut.Enabled = $true; $btnOutReset.Enabled = $true
+    Update-ReuseState
 
     # If the window was closed mid-run, close it for real now, with no more dialogs.
     if ($ui.Stop) { $main.Close(); return }
@@ -1461,7 +1600,18 @@ Write-Log 'SnipBatch ready.'
 Write-Log '1) Source folder  2) Output folder  3) Region  4) Process.'
 Write-Log 'In the selection: drag, adjust with the handles and press ENTER to confirm.'
 
+# The region from the previous run, if any, so it can be reused without
+# redrawing it. It is only offered: nothing is applied until the button.
+$saved = Read-LastRegion -Path (Get-LastRegionPath)
+if ($null -ne $saved) {
+    $ui.LastRegion = $saved.Rect
+    $ui.LastRefW   = $saved.RefWidth
+    $ui.LastRefH   = $saved.RefHeight
+    Write-Log "Last region remembered: $($saved.Rect.Width)x$($saved.Rect.Height) @ $($saved.Rect.X),$($saved.Rect.Y) - 'Reuse last region' applies it."
+}
+
 Update-OutBox
 Update-FormatState
+Update-ReuseState
 [void]$main.ShowDialog()
 $main.Dispose()
