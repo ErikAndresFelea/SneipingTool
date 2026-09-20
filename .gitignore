@@ -1,0 +1,3 @@
+# The shortcut Create-Shortcut.bat makes: it stores absolute paths, so it is
+# built on each machine rather than carried in the repository.
+SnipBatch.lnk

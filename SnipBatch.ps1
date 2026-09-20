@@ -1195,6 +1195,13 @@ $main.FormBorderStyle = 'FixedSingle'
 $main.MaximizeBox     = $false
 $main.Font            = New-Object System.Drawing.Font('Segoe UI', 9)
 
+# The same icon the shortcut wears, so the window and the taskbar button match
+# it. Missing or unreadable, the window just keeps the default PowerShell one.
+$iconPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'SnipBatch.ico'
+if (Test-Path -LiteralPath $iconPath) {
+    try { $main.Icon = New-Object System.Drawing.Icon($iconPath) } catch { }
+}
+
 $lblFolder = New-Object System.Windows.Forms.Label
 $lblFolder.Text     = '1. Source folder'
 $lblFolder.Location = New-Object System.Drawing.Point(14, 14)

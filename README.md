@@ -109,7 +109,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -STA -File .\SnipBatch.ps1
 |---|---|
 | `SnipBatch.bat` | Launcher. This is the one you run. |
 | `SnipBatch.ps1` | The whole tool: interface, selection and processing. |
+| `SnipBatch.ico` | The icon: a stack of screenshots with the selection box over the top one. |
+| `Create-Shortcut.bat` | Builds a shortcut that wears the icon. Run once. |
+| `tools/New-Icon.ps1` | Redraws `SnipBatch.ico` from code, all nine sizes. |
 | `tests/run-tests.bat` | Runs the 157 automated tests. |
+
+## The icon
+
+Windows paints the same generic gears on every `.bat` and gives no way to change it: an icon
+belongs to a shortcut, not to the script. Double-click **`Create-Shortcut.bat`** once and it
+leaves a `SnipBatch` shortcut next to the tool carrying the proper icon — launch or pin that one
+from then on. Add `/desktop` (or drop the shortcut on the Desktop yourself) to get a copy there.
+
+The icon is drawn by `tools/New-Icon.ps1` with GDI+ rather than stored as an unmodifiable blob,
+in sizes from 16 to 256 px, each one simplified as far as it has to be to still read: the whole
+stack of screenshots at 256, a single one with the selection box at 16. Edit the script and run
+it to change the icon. The main window wears it too.
 
 ## Tests
 
