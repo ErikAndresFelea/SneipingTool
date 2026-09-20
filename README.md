@@ -21,6 +21,11 @@ access and search, so a path can also be typed or pasted. Each one reopens where
 changing a folder never means walking the tree from the top again — and it is remembered between
 runs of the tool.
 
+The source one lists the images inside each folder as you browse, so you can tell the right
+folder from its neighbour: switch the view to *Large icons* for thumbnails and Windows will
+keep it that way. Press **Use folder** to take the folder on display; clicking an image first
+takes its folder just the same.
+
 ## The selection
 
 Drag to draw the rectangle. **Releasing the mouse does not confirm it**: the selection stays live

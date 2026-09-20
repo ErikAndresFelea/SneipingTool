@@ -84,6 +84,15 @@ public static class SnipBatchNative
 // FOS_PICKFOLDERS), shipped with Windows since Vista, so nothing to install.
 // SetFolder reopens it where the caller was, and the client GUID makes Windows
 // remember that place between runs of the tool.
+//
+// FOS_PICKFOLDERS hides every file, which leaves the source folder being picked
+// blind: no way to tell the folder with the screenshots from its neighbour.
+// So that one is opened in plain file mode instead (showFiles), filtered to
+// images, with FOS_FILEMUSTEXIST cleared and a placeholder in the name box:
+// confirming without touching a file hands back a path inside the folder on
+// display, and picking an image hands back that image. Either way the folder
+// is its directory part. The output picker stays in FOS_PICKFOLDERS mode, where
+// the New folder button lives.
 public static class SnipBatchFolder
 {
     [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
@@ -96,7 +105,8 @@ public static class SnipBatchFolder
     private interface IFileDialog
     {
         [PreserveSig] int Show(IntPtr parent);
-        void SetFileTypes();
+        void SetFileTypes(uint count,
+            [MarshalAs(UnmanagedType.LPArray)] FilterSpec[] filters);
         void SetFileTypeIndex();
         void GetFileTypeIndex();
         void Advise();
@@ -107,16 +117,24 @@ public static class SnipBatchFolder
         void SetFolder(IShellItem item);
         void GetFolder(out IShellItem item);
         void GetCurrentSelection(out IShellItem item);
-        void SetFileName();
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
         void GetFileName();
         void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
-        void SetOkButtonLabel();
-        void SetFileNameLabel();
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
         void GetResult(out IShellItem item);
         void AddPlace();
         void SetDefaultExtension();
         void Close();
         void SetClientGuid(ref Guid guid);
+    }
+
+    // COMDLG_FILTERSPEC: the pairs behind the file type dropdown.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct FilterSpec
+    {
+        [MarshalAs(UnmanagedType.LPWStr)] public string Name;
+        [MarshalAs(UnmanagedType.LPWStr)] public string Spec;
     }
 
     [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"),
@@ -139,19 +157,51 @@ public static class SnipBatchFolder
     private const uint FOS_PICKFOLDERS     = 0x00000020;
     private const uint FOS_FORCEFILESYSTEM = 0x00000040;   // no libraries or virtual folders
     private const uint FOS_PATHMUSTEXIST   = 0x00000800;
+    private const uint FOS_FILEMUSTEXIST   = 0x00001000;
     private const uint FOS_NOCHANGEDIR     = 0x00000008;   // keep the process CWD
     private const uint SIGDN_FILESYSPATH   = 0x80058000;
 
-    // Returns the chosen path, or null when the user cancels.
-    public static string Pick(IntPtr owner, string title, string startAt, string clientGuid)
+    // What goes in the name box in showFiles mode. Confirming with it untouched
+    // returns "<folder on display>\<this>", which is how the folder is read off
+    // a dialog that only ever hands back files.
+    private const string PLACEHOLDER = "Use this folder";
+
+    // Returns the chosen folder, or null when the user cancels. With showFiles
+    // the images in each folder are listed while browsing; without it, the
+    // plain folder picker.
+    public static string Pick(IntPtr owner, string title, string startAt,
+                              string clientGuid, bool showFiles)
     {
         IFileDialog dlg = (IFileDialog)new FileOpenDialogRCW();
         try
         {
             uint options;
             dlg.GetOptions(out options);
-            dlg.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
-                                   | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+            options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR;
+            if (showFiles)
+            {
+                // The placeholder names no real file, so this has to go.
+                options &= ~FOS_FILEMUSTEXIST;
+                options &= ~FOS_PICKFOLDERS;
+            }
+            else
+            {
+                options |= FOS_PICKFOLDERS;
+            }
+            dlg.SetOptions(options);
+
+            if (showFiles)
+            {
+                FilterSpec[] filters = new FilterSpec[2];
+                filters[0].Name = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff)";
+                filters[0].Spec = "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff";
+                filters[1].Name = "All files (*.*)";
+                filters[1].Spec = "*.*";
+                try { dlg.SetFileTypes((uint)filters.Length, filters); } catch { }
+                try { dlg.SetFileNameLabel("Folder:"); } catch { }
+                try { dlg.SetOkButtonLabel("Use folder"); } catch { }
+                try { dlg.SetFileName(PLACEHOLDER); } catch { }
+            }
 
             if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
             if (!string.IsNullOrEmpty(clientGuid))
@@ -183,7 +233,19 @@ public static class SnipBatchFolder
             try
             {
                 result.GetDisplayName(SIGDN_FILESYSPATH, out buf);
-                return Marshal.PtrToStringUni(buf);
+                string path = Marshal.PtrToStringUni(buf);
+                if (!showFiles || string.IsNullOrEmpty(path)) return path;
+
+                // A file was picked, or the placeholder came back untouched:
+                // either way the folder is the directory part. A folder can
+                // still arrive whole when it is typed into the name box.
+                try
+                {
+                    if (Directory.Exists(path)) return path;
+                    string dir = Path.GetDirectoryName(path);
+                    return string.IsNullOrEmpty(dir) ? path : dir;
+                }
+                catch { return path; }
             }
             finally
             {
@@ -1370,7 +1432,7 @@ function Set-SourceFolder {
 # If the COM dialog is ever unavailable it falls back to the old tree rather
 # than leaving the button dead.
 function Select-FolderDialog {
-    param([string]$Title, [string[]]$StartAt, [string]$ClientGuid)
+    param([string]$Title, [string[]]$StartAt, [string]$ClientGuid, [switch]$ShowFiles)
 
     $start = ''
     foreach ($p in $StartAt) {
@@ -1381,7 +1443,7 @@ function Select-FolderDialog {
     if ($main.IsHandleCreated) { $owner = $main.Handle }
 
     try {
-        $picked = [SnipBatchFolder]::Pick($owner, $Title, $start, $ClientGuid)
+        $picked = [SnipBatchFolder]::Pick($owner, $Title, $start, $ClientGuid, [bool]$ShowFiles)
     }
     catch {
         $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -1400,7 +1462,8 @@ function Select-FolderDialog {
 $btnFolder.Add_Click({
     $picked = Select-FolderDialog -Title 'Folder holding the screenshots' `
                                   -StartAt @($ui.Folder, $ui.LastDir) `
-                                  -ClientGuid '7b2f1a4e-6c3d-4b57-9a11-5d0c2e8f3a01'
+                                  -ClientGuid '7b2f1a4e-6c3d-4b57-9a11-5d0c2e8f3a01' `
+                                  -ShowFiles
     if ([string]::IsNullOrWhiteSpace($picked)) { return }
     Set-SourceFolder -Path $picked
 })
